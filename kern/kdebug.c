@@ -201,11 +201,13 @@ debuginfo_eip(uintptr_t addr, struct Eipdebuginfo *info)
 
 	// Set eip_fn_narg to the number of arguments taken by the function,
 	// or 0 if there was no containing function.
-	if (lfun < rfun)
-		for (lline = lfun + 1;
-		     lline < rfun && stabs[lline].n_type == N_PSYM;
-		     lline++)
-			info->eip_fn_narg++;
+	if (lfun < rfun) {
+	    for (lline = lfun + 1; lline < rfun; lline++) {
+                if (stabs[lline].n_type == N_PSYM) {
+                    info->eip_fn_narg++;
+                }
+            }
+        }
 
 	return 0;
 }
