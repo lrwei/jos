@@ -159,6 +159,8 @@ mem_init(void)
 	//////////////////////////////////////////////////////////////////////
 	// Make 'envs' point to an array of size 'NENV' of 'struct Env'.
 	// LAB 3: Your code here.
+        envs = boot_alloc(sizeof(struct Env) * NENV);
+        memset(envs, 0, sizeof(struct Env) * NENV);
 
 	//////////////////////////////////////////////////////////////////////
 	// Now that we've allocated the initial kernel data structures, we set
@@ -193,6 +195,9 @@ mem_init(void)
 	//    - the new image at UENVS  -- kernel R, user R
 	//    - envs itself -- kernel RW, user NONE
 	// LAB 3: Your code here.
+        boot_map_region(kern_pgdir, UENVS,
+                ROUNDUP(sizeof(struct Env) * NENV, PGSIZE),
+                PADDR(envs), PTE_U);
 
 	//////////////////////////////////////////////////////////////////////
 	// Use the physical memory that 'bootstack' refers to as the kernel
@@ -350,8 +355,12 @@ page_free(struct PageInfo *pp)
 void
 page_decref(struct PageInfo* pp)
 {
-	if (--pp->pp_ref == 0)
-		page_free(pp);
+    // Catch programming error of failing to increase the `pp_ref` field.
+    assert(pp->pp_ref != 0);
+
+    if (--pp->pp_ref == 0) {
+        page_free(pp);
+    }
 }
 
 // Given 'pgdir', a pointer to a page directory, pgdir_walk returns
@@ -573,6 +582,28 @@ int
 user_mem_check(struct Env *env, const void *va, size_t len, int perm)
 {
 	// LAB 3: Your code here.
+        const void *old_va = va;
+
+        va = ROUNDDOWN(va, PGSIZE);
+        len = ROUNDUP(len + (old_va - va), PGSIZE);
+
+        perm |= PTE_P;
+        user_mem_check_addr = (uintptr_t) old_va;
+        for ( ; len > 0; len -= PGSIZE) {
+            if ((uintptr_t) va >= ULIM) {
+                return -E_FAULT;
+            } else {
+                pte_t *pte;
+
+                if (!(pte = pgdir_walk(env->env_pgdir, va, false))) {
+                    return -E_FAULT;
+                } else if ((*pte & perm) != perm) {
+                    return -E_FAULT;
+                }
+                va += PGSIZE;
+                user_mem_check_addr = (uintptr_t) va;
+            }
+        }
 
 	return 0;
 }
