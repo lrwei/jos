@@ -37,27 +37,50 @@ syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 	return ret;
 }
 
+static inline int32_t
+_syscall(int num, int check, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
+{
+    int32_t ret;
+
+    asm volatile(
+            "push %%ebp\n"
+            "movl %%esp, %%ebp\n"
+            "leal 1f, %%esi\n"
+            "sysenter\n"
+            "1:\n"
+            "popl %%ebp"
+            : "=a" (ret)
+            : "a" (num), "d" (a1), "c" (a2), "b" (a3), "D" (a4)
+            : "esi", "cc", "memory");
+
+
+    if (check && ret > 0) {
+        panic("syscall %d returned %d (> 0)", num, ret);
+    }
+
+    return ret;
+}
+
 void
 sys_cputs(const char *s, size_t len)
 {
-	syscall(SYS_cputs, 0, (uint32_t)s, len, 0, 0, 0);
+	_syscall(SYS_cputs, 0, (uint32_t)s, len, 0, 0);
 }
 
 int
 sys_cgetc(void)
 {
-	return syscall(SYS_cgetc, 0, 0, 0, 0, 0, 0);
+	return _syscall(SYS_cgetc, 0, 0, 0, 0, 0);
 }
 
 int
 sys_env_destroy(envid_t envid)
 {
-	return syscall(SYS_env_destroy, 1, envid, 0, 0, 0, 0);
+	return _syscall(SYS_env_destroy, 1, envid, 0, 0, 0);
 }
 
 envid_t
 sys_getenvid(void)
 {
-	 return syscall(SYS_getenvid, 0, 0, 0, 0, 0, 0);
+	 return _syscall(SYS_getenvid, 0, 0, 0, 0, 0);
 }
-

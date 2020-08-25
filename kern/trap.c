@@ -79,6 +79,7 @@ trap_init(void)
 }
 
 // Initialize and load the per-CPU TSS and IDT
+// ... and MSRs.
 void
 trap_init_percpu(void)
 {
@@ -99,6 +100,13 @@ trap_init_percpu(void)
 
 	// Load the IDT
 	lidt(&idt_pd);
+
+        // Load MSRs for fast system call.
+        extern void sysenter_handler(void);
+
+        wrmsr(IA32_SYSENTER_CS, GD_KT);
+        wrmsr(IA32_SYSENTER_ESP, KSTACKTOP);
+        wrmsr(IA32_SYSENTER_EIP, (uintptr_t) sysenter_handler);
 }
 
 void
