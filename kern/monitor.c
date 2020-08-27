@@ -11,6 +11,7 @@
 #include <kern/monitor.h>
 #include <kern/kdebug.h>
 #include <kern/trap.h>
+#include <kern/env.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
 
@@ -26,6 +27,7 @@ static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
 	{ "backtrace", "Display current stack backtrace", mon_backtrace },
+	{ "continue", "Resume execution of suspended program", mon_continue },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -89,6 +91,32 @@ mon_backtrace(int argc, char **argv, struct Trapframe *tf)
     return 0;
 }
 
+int mon_continue(int argc, char **argv, struct Trapframe *tf)
+{
+    if (!tf) {
+        cprintf("No pending environment, command ignored.\n");
+        return 0;
+    }
+
+    switch (tf->tf_trapno) {
+    case T_DEBUG:
+        /* Do something else.  */
+    case T_BRKPT:
+        tf->tf_eflags |= FL_TF;
+        break;
+    default:
+        cprintf("No pending debug exception, command ignored.\n");
+        return 0;
+    }
+
+    if (argc == 1) {
+        tf->tf_eflags &= ~FL_TF;
+    }
+
+    assert(curenv);
+    assert(curenv->env_status == ENV_RUNNING);
+    env_run(curenv);
+}
 
 
 /***** Kernel monitor command interpreter *****/

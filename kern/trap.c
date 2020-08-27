@@ -161,6 +161,7 @@ trap_dispatch(struct Trapframe *tf)
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
         switch (tf->tf_trapno) {
+        case T_DEBUG:
         case T_BRKPT:
             monitor(tf);
             break;
@@ -196,6 +197,9 @@ trap(struct Trapframe *tf)
 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
 	// the interrupt path.
 	assert(!(read_eflags() & FL_IF));
+
+        // Processor should have cleared Trap Flag in %eflags.
+        assert(!(read_eflags() & FL_TF));
 
 	cprintf("Incoming TRAP frame at %p\n", tf);
 
