@@ -352,7 +352,52 @@ static int
 sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 {
 	// LAB 4: Your code here.
-	panic("sys_ipc_try_send not implemented");
+        int r;
+        struct Env *e;
+
+        r = envid2env(envid, &e, false);
+        if (r < 0) {
+            return r;
+        }
+
+        if (!e->env_ipc_recving) {
+            return -E_IPC_NOT_RECV;
+        }
+
+        if ((uintptr_t) srcva < UTOP && (uintptr_t) e->env_ipc_dstva < UTOP) {
+            pte_t *pte;
+            struct PageInfo *p;
+
+            if (srcva != ROUNDUP(srcva, PGSIZE)) {
+                return -E_INVAL;
+            }
+            if (!(PTE_U & perm) || !(PTE_P & perm) || perm & ~PTE_SYSCALL) {
+                return -E_INVAL;
+            }
+            p = page_lookup(curenv->env_pgdir, srcva, &pte);
+            if (!p) {
+                return -E_INVAL;
+            }
+            if ((PTE_W & perm) && !(PTE_W & *pte)) {
+                return -E_INVAL;
+            }
+            r = page_insert(e->env_pgdir, p, e->env_ipc_dstva, perm);
+            if (r < 0) {
+                return r;
+            }
+            e->env_ipc_perm = perm;
+        } else {
+            e->env_ipc_perm = 0;
+        }
+
+        e->env_ipc_value = value;
+        e->env_ipc_from = curenv->env_id;
+        e->env_tf.tf_regs.reg_eax = 0;
+
+        e->env_ipc_recving = false;
+        e->env_status = ENV_RUNNABLE;
+
+        return 0;
 }
 
 // Block until a value is ready.  Record that you want to receive
@@ -370,8 +415,18 @@ static int
 sys_ipc_recv(void *dstva)
 {
 	// LAB 4: Your code here.
-	panic("sys_ipc_recv not implemented");
-	return 0;
+        if ((uintptr_t) dstva < UTOP) {
+            if (dstva != ROUNDUP(dstva, PGSIZE)) {
+                return -E_INVAL;
+            }
+            curenv->env_ipc_dstva = dstva;
+        } else {
+            curenv->env_ipc_dstva = (void *) UTOP;
+        }
+
+        curenv->env_status = ENV_NOT_RUNNABLE;
+        curenv->env_ipc_recving = true;
+        sched_yield();
 }
 
 // Dispatches to the correct kernel function, passing the arguments.
@@ -417,6 +472,12 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
             break;
         case SYS_yield:
             sched_yield();
+            break;
+        case SYS_ipc_try_send:
+            r = sys_ipc_try_send((envid_t) a1, a2, (void *) a3, a4);
+            break;
+        case SYS_ipc_recv:
+            r = sys_ipc_recv((void *) a1);
             break;
 	default:
             panic("Unknown syscallno: %d", syscallno);
