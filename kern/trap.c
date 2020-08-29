@@ -14,7 +14,8 @@
 #include <kern/cpu.h>
 #include <kern/spinlock.h>
 
-static struct Taskstate ts;
+// Deprecated since lab4.
+// static struct Taskstate ts;
 
 /* For debugging, so print_trapframe can distinguish between printing
  * a saved trapframe and printing the current trapframe and print some
@@ -74,12 +75,12 @@ trap_init(void)
         extern uintptr_t _vectors[];
 
 	// LAB 3: Your code here.
-        for (int i = 0; i < T_NUMBER; i++) {
+        for (int i = 0; i <= T_SYSCALL; i++) {
             SETGATE(idt[i], 0, GD_KT, _vectors[i], 0);
         }
-        SETGATE(idt[T_SYSCALL], 0, GD_KT, _vectors[T_SYSCALL], 3);
 
         idt[T_BRKPT].gd_dpl = 3;
+        idt[T_SYSCALL].gd_dpl = 3;
 
 	// Per-CPU setup 
 	trap_init_percpu();
@@ -114,21 +115,22 @@ trap_init_percpu(void)
 	// user space on that CPU.
 	//
 	// LAB 4: Your code here:
+        struct Taskstate *ts = &thiscpu->cpu_ts;
 
 	// Setup a TSS so that we get the right stack
 	// when we trap to the kernel.
-	ts.ts_esp0 = KSTACKTOP;
-	ts.ts_ss0 = GD_KD;
-	ts.ts_iomb = sizeof(struct Taskstate);
+	ts->ts_esp0 = KSTACKTOP - (KSTKSIZE + KSTKGAP) * cpunum();
+	ts->ts_ss0 = GD_KD;
+	ts->ts_iomb = sizeof(struct Taskstate);
 
 	// Initialize the TSS slot of the gdt.
-	gdt[GD_TSS0 >> 3] = SEG16(STS_T32A, (uint32_t) (&ts),
+	gdt[(GD_TSS0 >> 3) + cpunum()] = SEG16(STS_T32A, (uint32_t) ts,
 					sizeof(struct Taskstate) - 1, 0);
-	gdt[GD_TSS0 >> 3].sd_s = 0;
+	gdt[(GD_TSS0 >> 3) + cpunum()].sd_s = 0;
 
 	// Load the TSS selector (like other segment selectors, the
 	// bottom three bits are special; we leave them 0)
-	ltr(GD_TSS0);
+	ltr(GD_TSS0 + (cpunum() << 3));
 
 	// Load the IDT
 	lidt(&idt_pd);
@@ -137,7 +139,7 @@ trap_init_percpu(void)
         extern void sysenter_handler(void);
 
         wrmsr(IA32_SYSENTER_CS, GD_KT);
-        wrmsr(IA32_SYSENTER_ESP, KSTACKTOP);
+        wrmsr(IA32_SYSENTER_ESP, KSTACKTOP - (KSTKSIZE + KSTKGAP) * cpunum());
         wrmsr(IA32_SYSENTER_EIP, (uintptr_t) sysenter_handler);
 }
 
@@ -220,6 +222,10 @@ trap_dispatch(struct Trapframe *tf)
 	// Handle clock interrupts. Don't forget to acknowledge the
 	// interrupt using lapic_eoi() before calling the scheduler!
 	// LAB 4: Your code here.
+        if (tf->tf_trapno == IRQ_OFFSET + IRQ_TIMER) {
+            lapic_eoi();
+            sched_yield();
+        }
 
 	// Unexpected trap: The user process or the kernel has a bug.
 	print_trapframe(tf);
@@ -261,6 +267,7 @@ trap(struct Trapframe *tf)
 		// serious kernel work.
 		// LAB 4: Your code here.
 		assert(curenv);
+                lock_kernel();
 
 		// Garbage collect if current enviroment is a zombie
 		if (curenv->env_status == ENV_DYING) {
@@ -340,6 +347,25 @@ page_fault_handler(struct Trapframe *tf)
 	//   (the 'tf' variable points at 'curenv->env_tf').
 
 	// LAB 4: Your code here.
+        if (curenv->env_pgfault_upcall) {
+            struct UTrapframe *utf = (void *) (tf->tf_esp <= USTACKTOP ?
+                UXSTACKTOP : tf->tf_esp - 4);
+
+            utf--;
+            user_mem_assert(curenv, (void *) utf, sizeof(struct UTrapframe),
+                    PTE_W);
+
+            utf->utf_fault_va = fault_va;
+            utf->utf_err = tf->tf_err;
+            utf->utf_regs = tf->tf_regs;
+            utf->utf_eip = tf->tf_eip;
+            utf->utf_eflags = tf->tf_eflags;
+            utf->utf_esp = tf->tf_esp;
+
+            tf->tf_eip = (uintptr_t) curenv->env_pgfault_upcall;
+            tf->tf_esp = (uintptr_t) utf;
+            env_run(curenv);
+        }
 
 	// Destroy the environment that caused the fault.
 	cprintf("[%08x] user fault va %08x ip %08x\n",

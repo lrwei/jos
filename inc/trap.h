@@ -24,16 +24,16 @@
 #define T_MCHK      18		// machine check
 #define T_SIMDERR   19		// SIMD floating point error
 #define T_VIRTERR   20		// virtualization exception
+#define T_NUMBER    (T_VIRTERR + 1)
 
 // These are arbitrarily chosen, but with care not to overlap
 // processor defined exceptions or interrupt vectors.
 #define T_SYSCALL   48		// system call
 #define T_DEFAULT   500		// catchall
 
-#define T_NUMBER    (T_VIRTERR + 1)
-#define GAPSIZE     ((T_SYSCALL - T_NUMBER) * 4)
-
 #define IRQ_OFFSET	32	// IRQ 0 corresponds to int IRQ_OFFSET
+
+#define GAPSIZE     ((IRQ_OFFSET - T_NUMBER) * 4)
 
 // Hardware IRQ numbers. We receive these as (IRQ_OFFSET+IRQ_WHATEVER)
 #define IRQ_TIMER        0

@@ -55,6 +55,17 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
 int	sys_ipc_recv(void *rcv_pg);
 
 // This must be inlined.  Exercise for reader: why?
+// Indeed, `sys_exofork()` must be at the same level in terms of stack frame,
+// with the whatsoever `fork()` function that calls it. This is necessitiated
+// by the fact that `fork()` is separated into several parts, and implemented
+// in user space, running, when copying itself to its embryonic child.
+//
+// If we do outline `sys_exofork()`, it will place its return address onto its
+// stack frame, on which the newly created child depends to return from current
+// function. However, as the parent went on copying its stack page to the child,
+// the stack frame of the already returned function `sys_exofork()` would have
+// been trashed, causing the innocent child using whatever is pushed onto the
+// stack as its return address.
 static inline envid_t __attribute__((always_inline))
 sys_exofork(void)
 {

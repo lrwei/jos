@@ -25,6 +25,8 @@ pgfault(struct UTrapframe *utf)
 	//   (see <inc/memlayout.h>).
 
 	// LAB 4: Your code here.
+        assert(err & FEC_WR);
+        assert(uvpt[PGNUM(addr)] & PTE_COW);
 
 	// Allocate a new page, map it at a temporary location (PFTEMP),
 	// copy the data from the old page to the new page, then move the new
@@ -33,8 +35,11 @@ pgfault(struct UTrapframe *utf)
 	//   You should make three system calls.
 
 	// LAB 4: Your code here.
-
-	panic("pgfault not implemented");
+        assert(!sys_page_alloc(0, (void *) PFTEMP, PTE_U | PTE_W | PTE_P));
+        memcpy((void *) PFTEMP, ROUNDDOWN(addr, PGSIZE), PGSIZE);
+        assert(!sys_page_map(0, (void *) PFTEMP, 0, ROUNDDOWN(addr, PGSIZE),
+                PTE_U | PTE_W | PTE_P));
+        assert(!sys_page_unmap(0, (void *) PFTEMP));
 }
 
 //
@@ -54,7 +59,23 @@ duppage(envid_t envid, unsigned pn)
 	int r;
 
 	// LAB 4: Your code here.
-	panic("duppage not implemented");
+        int perm = PTE_U | PTE_P;
+        void *addr = (void *) (pn * PGSIZE);
+
+        assert(uvpt[pn] & PTE_P);
+        if ((uvpt[pn] & PTE_W) || (uvpt[pn] & PTE_COW)) {
+            perm |= PTE_COW;
+            // The order here matters. Because COW mark on stack page is
+            // volatile and will be cleared immediately due to parent's
+            // calling and returning from function. So if we map the parent's
+            // stack page first, what the poor child actually gets will be a
+            // constantly changing stack page.
+            assert(!sys_page_map(0, addr, envid, addr, perm));
+            assert(!sys_page_map(0, addr, 0, addr, perm));
+        } else {
+            assert(!sys_page_map(0, addr, envid, addr, perm));
+        }
+
 	return 0;
 }
 
@@ -78,7 +99,34 @@ envid_t
 fork(void)
 {
 	// LAB 4: Your code here.
-	panic("fork not implemented");
+        envid_t envid;
+
+        envid = sys_exofork();
+        assert(envid >= 0);
+
+        if (envid == 0) {
+            thisenv = &envs[ENVX(sys_getenvid())];
+            return 0;
+        }
+
+        set_pgfault_handler(pgfault);
+
+        for (uintptr_t addr = UTEXT; addr < USTACKTOP; addr += PGSIZE) {
+            if (!(uvpd[PDX(addr)] & PTE_P)) {
+                addr += PTSIZE - PGSIZE;
+                continue;
+            } else if (!(uvpt[PGNUM(addr)] & PTE_P)) {
+                continue;
+            }
+            duppage(envid, PGNUM(addr));
+        }
+
+        assert(!sys_page_alloc(envid, (void *) UXSTACKTOP - PGSIZE,
+                    PTE_U | PTE_W | PTE_P));
+        assert(!sys_env_set_pgfault_upcall(envid, thisenv->env_pgfault_upcall));
+        assert(!sys_env_set_status(envid, ENV_RUNNABLE));
+
+        return envid;
 }
 
 // Challenge!

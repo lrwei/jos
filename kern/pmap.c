@@ -281,7 +281,18 @@ mem_init_mp(void)
 	//     Permissions: kernel RW, user NONE
 	//
 	// LAB 4: Your code here:
+        uintptr_t stacktop = KSTACKTOP;
 
+        // For BSP, this would change physical memory backing the region
+        // [KSTACKTOP - KSTKSIZE, KSTACKTOP), while the stack pointer itself
+        // isn't altered correspondingly. However, doing so is absolutely
+        // safe, since it currently still points to somewhere in between of
+        // $bootstack and $bootstacktop.
+        for (int i = 0; i < NCPU; i++) {
+            boot_map_region(kern_pgdir, stacktop - KSTKSIZE, KSTKSIZE,
+                    PADDR(percpu_kstacks[i]), PTE_W);
+            stacktop -= (KSTKSIZE + KSTKGAP);
+        }
 }
 
 // --------------------------------------------------------------
@@ -321,10 +332,14 @@ page_init(void)
 	// NB: DO NOT actually touch the physical memory corresponding to
 	// free pages!
 	size_t i;
+
 	for (i = 1; i < npages_basemem; i++) {
-		pages[i].pp_ref = 0;
-		pages[i].pp_link = page_free_list;
-		page_free_list = &pages[i];
+            if (i == PGNUM(MPENTRY_PADDR)) {
+                continue;
+            }
+            pages[i].pp_ref = 0;
+            pages[i].pp_link = page_free_list;
+            page_free_list = &pages[i];
 	}
 
         for (i = PGNUM(PADDR(boot_alloc(0))); i < npages; i++) {
@@ -624,7 +639,17 @@ mmio_map_region(physaddr_t pa, size_t size)
 	// Hint: The staff solution uses boot_map_region.
 	//
 	// Your code here:
-	panic("mmio_map_region not implemented");
+        void *result = (void *) base;
+
+        assert(pa <= -size);
+        assert(size <= MMIOLIM - base);
+
+        size = ROUNDUP(size + (pa - ROUNDDOWN(pa, PGSIZE)), PGSIZE);
+        pa = ROUNDDOWN(pa, PGSIZE);
+
+        boot_map_region(kern_pgdir, base, size, pa, PTE_PCD | PTE_PWT | PTE_W);
+        base += size;
+        return result;
 }
 
 static uintptr_t user_mem_check_addr;
