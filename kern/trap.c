@@ -53,7 +53,8 @@ static const char *trapname(int trapno)
 		"x87 FPU Floating-Point Error",
 		"Alignment Check",
 		"Machine-Check",
-		"SIMD Floating-Point Exception"
+		"SIMD Floating-Point Exception",
+                "Virtualization Exception",
 	};
 
 	if (trapno < ARRAY_SIZE(excnames))
@@ -70,14 +71,22 @@ void
 trap_init(void)
 {
 	extern struct Segdesc gdt[];
+        extern uintptr_t _vectors[];
 
 	// LAB 3: Your code here.
+        for (int i = 0; i < T_NUMBER; i++) {
+            SETGATE(idt[i], 0, GD_KT, _vectors[i], 0);
+        }
+        SETGATE(idt[T_SYSCALL], 0, GD_KT, _vectors[T_SYSCALL], 3);
+
+        idt[T_BRKPT].gd_dpl = 3;
 
 	// Per-CPU setup 
 	trap_init_percpu();
 }
 
 // Initialize and load the per-CPU TSS and IDT
+// ... and MSRs.
 void
 trap_init_percpu(void)
 {
@@ -123,6 +132,13 @@ trap_init_percpu(void)
 
 	// Load the IDT
 	lidt(&idt_pd);
+
+        // Load MSRs for fast system call.
+        extern void sysenter_handler(void);
+
+        wrmsr(IA32_SYSENTER_CS, GD_KT);
+        wrmsr(IA32_SYSENTER_ESP, KSTACKTOP);
+        wrmsr(IA32_SYSENTER_EIP, (uintptr_t) sysenter_handler);
 }
 
 void
@@ -176,6 +192,21 @@ trap_dispatch(struct Trapframe *tf)
 {
 	// Handle processor exceptions.
 	// LAB 3: Your code here.
+        switch (tf->tf_trapno) {
+        case T_DEBUG:
+        case T_BRKPT:
+            monitor(tf);
+            break;
+        case T_PGFLT:
+            page_fault_handler(tf);
+            break;
+        case T_SYSCALL:
+            tf->tf_regs.reg_eax = syscall(
+                    tf->tf_regs.reg_eax, tf->tf_regs.reg_edx,
+                    tf->tf_regs.reg_ecx, tf->tf_regs.reg_ebx,
+                    tf->tf_regs.reg_edi, tf->tf_regs.reg_esi);
+            return;
+        }
 
 	// Handle spurious interrupts
 	// The hardware sometimes raises these because of noise on the
@@ -220,6 +251,9 @@ trap(struct Trapframe *tf)
 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
 	// the interrupt path.
 	assert(!(read_eflags() & FL_IF));
+
+        // Processor should have cleared Trap Flag in %eflags.
+        assert(!(read_eflags() & FL_TF));
 
 	if ((tf->tf_cs & 3) == 3) {
 		// Trapped from user mode.
@@ -271,6 +305,7 @@ page_fault_handler(struct Trapframe *tf)
 	// Handle kernel-mode page faults.
 
 	// LAB 3: Your code here.
+        assert(tf->tf_cs & 3); /* or */ assert(tf->tf_err & FEC_U);
 
 	// We've already handled kernel-mode exceptions, so if we get here,
 	// the page fault happened in user mode.

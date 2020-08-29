@@ -11,6 +11,7 @@
 #include <kern/monitor.h>
 #include <kern/kdebug.h>
 #include <kern/trap.h>
+#include <kern/env.h>
 
 #define CMDBUF_SIZE	80	// enough for one VGA text line
 
@@ -25,6 +26,8 @@ struct Command {
 static struct Command commands[] = {
 	{ "help", "Display this list of commands", mon_help },
 	{ "kerninfo", "Display information about the kernel", mon_kerninfo },
+	{ "backtrace", "Display current stack backtrace", mon_backtrace },
+	{ "continue", "Resume execution of suspended program", mon_continue },
 };
 
 /***** Implementations of basic kernel monitor commands *****/
@@ -58,10 +61,62 @@ mon_kerninfo(int argc, char **argv, struct Trapframe *tf)
 int
 mon_backtrace(int argc, char **argv, struct Trapframe *tf)
 {
-	// Your code here.
-	return 0;
+    // Your code here.
+    uint32_t ebp = read_ebp();
+    struct Eipdebuginfo info;
+    int n_args = 3;
+
+    cprintf("Stack backtrace:\n");
+    while (ebp != 0) {
+        /* ptr     -> &ptr[1]        -> &ptr[2]   -> ...      -> stack top
+         * old_ebp    return address    first arg    last arg */
+        uint32_t *ptr = (uint32_t *) ebp;
+
+        cprintf("  ebp %08x  eip %08x  args", ebp, ptr[1]);
+        if (n_args == 0) {
+            cprintf(" (void)");
+        } else {
+            for (int i = 2; i < 2 + n_args; i++) {
+                cprintf(" %08x", ptr[i]);
+            }
+        }
+        assert(!debuginfo_eip(ptr[1], &info));
+        cprintf("\n    %s:%d: %.*s+%d\n", info.eip_file, info.eip_line,
+                info.eip_fn_namelen, info.eip_fn_name,
+                ptr[1] - info.eip_fn_addr);
+        n_args = info.eip_fn_narg;
+        ebp = ptr[0];
+    }
+
+    return 0;
 }
 
+int mon_continue(int argc, char **argv, struct Trapframe *tf)
+{
+    if (!tf) {
+        cprintf("No pending environment, command ignored.\n");
+        return 0;
+    }
+
+    switch (tf->tf_trapno) {
+    case T_DEBUG:
+        /* Do something else.  */
+    case T_BRKPT:
+        tf->tf_eflags |= FL_TF;
+        break;
+    default:
+        cprintf("No pending debug exception, command ignored.\n");
+        return 0;
+    }
+
+    if (argc == 1) {
+        tf->tf_eflags &= ~FL_TF;
+    }
+
+    assert(curenv);
+    assert(curenv->env_status == ENV_RUNNING);
+    env_run(curenv);
+}
 
 
 /***** Kernel monitor command interpreter *****/
