@@ -61,10 +61,25 @@ struct Env {
 
 	// Lab 4 IPC
 	bool env_ipc_recving;		// Env is blocked receiving
-	void *env_ipc_dstva;		// VA at which to map received page
-	uint32_t env_ipc_value;		// Data value sent to us
-	envid_t env_ipc_from;		// envid of the sender
-	int env_ipc_perm;		// Perm of page mapping received
+        envid_t env_ipc_pending_first;  // The first pending sender
+        envid_t env_ipc_pending_last;   // The last pending sender
+
+        union {
+            uint32_t env_ipc_value;     // Data value sent to us
+            uint32_t env_ipc_pending_value;
+        };
+        union {
+            void *env_ipc_dstva;        // VA at which to map received page
+            struct PageInfo *env_ipc_pending_page;
+        };
+        union {
+            int env_ipc_perm;           // Perm of page mapping received
+            int env_ipc_pending_perm;
+        };
+        union {
+            envid_t env_ipc_from;       // envid of the sender
+            envid_t env_ipc_pending_next;
+        };
 };
 
 #endif // !JOS_INC_ENV_H

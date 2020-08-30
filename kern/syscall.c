@@ -354,20 +354,10 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 	// LAB 4: Your code here.
         int r;
         struct Env *e;
+        pte_t *pte;
+        struct PageInfo *p = NULL;
 
-        r = envid2env(envid, &e, false);
-        if (r < 0) {
-            return r;
-        }
-
-        if (!e->env_ipc_recving) {
-            return -E_IPC_NOT_RECV;
-        }
-
-        if ((uintptr_t) srcva < UTOP && (uintptr_t) e->env_ipc_dstva < UTOP) {
-            pte_t *pte;
-            struct PageInfo *p;
-
+        if ((uintptr_t) srcva < UTOP) {
             if (srcva != ROUNDUP(srcva, PGSIZE)) {
                 return -E_INVAL;
             }
@@ -381,6 +371,41 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
             if ((PTE_W & perm) && !(PTE_W & *pte)) {
                 return -E_INVAL;
             }
+        }
+
+        r = envid2env(envid, &e, false);
+        if (r < 0) {
+            return r;
+        }
+
+        if (e == curenv) {
+            return -E_BAD_ENV;
+        }
+
+        if (!e->env_ipc_recving) {
+            if (e->env_ipc_pending_first >= 0) {
+                struct Env *lastenv;
+
+                assert(!envid2env(e->env_ipc_pending_last, &lastenv, false));
+                lastenv->env_ipc_pending_next = curenv->env_id;
+            } else {
+                e->env_ipc_pending_first = curenv->env_id;
+            }
+            e->env_ipc_pending_last = curenv->env_id;
+
+            curenv->env_ipc_pending_value = value;
+            curenv->env_ipc_pending_page = p;
+            curenv->env_ipc_pending_perm = perm;
+            curenv->env_ipc_pending_next = -1;
+
+            curenv->env_status = ENV_NOT_RUNNABLE;
+            // Not a real return, as curenv has been marked as NOT_RUNNABLE.
+            // Yield scheduler through trap() instead.
+            return -E_UNSPECIFIED;
+        }
+
+        assert(e->env_ipc_pending_first == -1);
+        if ((uintptr_t) e->env_ipc_dstva < UTOP && p) {
             r = page_insert(e->env_pgdir, p, e->env_ipc_dstva, perm);
             if (r < 0) {
                 return r;
@@ -390,11 +415,11 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
             e->env_ipc_perm = 0;
         }
 
+        e->env_ipc_recving = false;
         e->env_ipc_value = value;
         e->env_ipc_from = curenv->env_id;
-        e->env_tf.tf_regs.reg_eax = 0;
 
-        e->env_ipc_recving = false;
+        e->env_tf.tf_regs.reg_eax = 0;
         e->env_status = ENV_RUNNABLE;
 
         return 0;
@@ -411,22 +436,55 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 // return 0 on success.
 // Return < 0 on error.  Errors are:
 //	-E_INVAL if dstva < UTOP but dstva is not page-aligned.
+//	-E_NO_MEM if there's not enough memory to map env_ipc_pending_page
+//		in address space.
 static int
 sys_ipc_recv(void *dstva)
 {
 	// LAB 4: Your code here.
-        if ((uintptr_t) dstva < UTOP) {
-            if (dstva != ROUNDUP(dstva, PGSIZE)) {
-                return -E_INVAL;
-            }
-            curenv->env_ipc_dstva = dstva;
-        } else {
-            curenv->env_ipc_dstva = (void *) UTOP;
+        int r = 0;
+        struct Env *e;
+
+        if ((uintptr_t) dstva < UTOP && dstva != ROUNDUP(dstva, PGSIZE)) {
+            return -E_INVAL;
         }
 
-        curenv->env_status = ENV_NOT_RUNNABLE;
-        curenv->env_ipc_recving = true;
-        sched_yield();
+retry:
+        if (curenv->env_ipc_pending_first < 0) {
+            curenv->env_ipc_recving = true;
+            curenv->env_ipc_dstva = dstva;
+
+            curenv->env_status = ENV_NOT_RUNNABLE;
+            // Not a real return, as curenv has been marked as NOT_RUNNABLE.
+            // Yield scheduler through trap() instead.
+            return -E_UNSPECIFIED;
+        } else if (r < 0) {
+            return r;
+        }
+
+        assert(!envid2env(curenv->env_ipc_pending_first, &e, false));
+        curenv->env_ipc_pending_first = e->env_ipc_pending_next;
+
+        if ((uintptr_t) dstva < UTOP && e->env_ipc_pending_page) {
+            r = page_insert(curenv->env_pgdir, e->env_ipc_pending_page,
+                    dstva, e->env_ipc_pending_perm);
+            if (r < 0) {
+                // Inform all pending senders that we ran out of memory.
+                e->env_tf.tf_regs.reg_eax = r;
+                e->env_status = ENV_RUNNABLE;
+                goto retry;
+            }
+            curenv->env_ipc_perm = e->env_ipc_pending_perm;
+        } else {
+            curenv->env_ipc_perm = 0;
+        }
+        curenv->env_ipc_value = e->env_ipc_pending_value;
+        curenv->env_ipc_from = e->env_id;
+
+        e->env_tf.tf_regs.reg_eax = 0;
+        e->env_status = ENV_RUNNABLE;
+
+        return 0;
 }
 
 // Dispatches to the correct kernel function, passing the arguments.

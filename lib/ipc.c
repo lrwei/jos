@@ -47,7 +47,7 @@ ipc_recv(envid_t *from_env_store, void *pg, int *perm_store)
             }
         }
 
-	return thisenv->env_ipc_value;;
+	return thisenv->env_ipc_value;
 }
 
 // Send 'val' (and 'pg' with 'perm', if 'pg' is nonnull) to 'toenv'.
