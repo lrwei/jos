@@ -133,6 +133,37 @@ fork(void)
 int
 sfork(void)
 {
-	panic("sfork not implemented");
-	return -E_INVAL;
+        envid_t envid;
+        uintptr_t addr;
+
+        envid = sys_exofork();
+        assert(envid >= 0);
+
+        if (envid == 0) {
+            thisenv = &envs[ENVX(sys_getenvid())];
+            return 0;
+        }
+
+        for (addr = UTEXT; addr < USTACKTOP - PGSIZE; addr += PGSIZE) {
+            if (!(uvpd[PDX(addr)] & PTE_P)) {
+                addr += PTSIZE - PGSIZE;
+                continue;
+            } else if (!(uvpt[PGNUM(addr)] & PTE_P)) {
+                continue;
+            }
+
+            // Only copy page table entry.
+            assert(!sys_page_map(0, (void *) addr, envid, (void *) addr,
+                        uvpt[PGNUM(addr)] & (PTE_U | PTE_W | PTE_P)));
+        }
+
+        // Allocate and copy the stack page.
+        assert(!sys_page_alloc(0, (void *) PFTEMP, PTE_U | PTE_W | PTE_P));
+        memcpy((void *) PFTEMP, (void *) USTACKTOP - PGSIZE, PGSIZE);
+        assert(!sys_page_map(0, (void *) PFTEMP, envid,
+                    (void *) USTACKTOP - PGSIZE, PTE_U | PTE_W | PTE_P));
+        assert(!sys_page_unmap(0, (void *) PFTEMP));
+
+        assert(!sys_env_set_status(envid, ENV_RUNNABLE));
+        return envid;
 }

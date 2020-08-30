@@ -5,7 +5,9 @@
 
 extern void umain(int argc, char **argv);
 
-const volatile struct Env *thisenv;
+// Instead of placing it in data section, we allocate a slot
+// at the top of user stack to hold this pointer.
+extern const volatile struct Env *thisenv;
 const char *binaryname = "<unknown>";
 
 void

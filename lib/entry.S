@@ -12,6 +12,8 @@
 	.set uvpt, UVPT
 	.globl uvpd
 	.set uvpd, (UVPT+(UVPT>>12)*4)
+        .globl thisenv
+        .set thisenv, (USTACKTOP - 4)
 
 
 // Entrypoint - this is where the kernel (or our parent environment)
@@ -20,7 +22,7 @@
 .globl _start
 _start:
 	// See if we were started with arguments on the stack
-	cmpl $USTACKTOP, %esp
+	cmpl $USTACKTOP - 4, %esp
 	jne args_exist
 
 	// If not, push dummy argc/argv arguments.
