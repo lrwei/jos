@@ -5,6 +5,8 @@
 #include <inc/stdio.h>
 #include <inc/stdarg.h>
 
+#include <kern/spinlock.h>
+
 
 static void
 putch(int ch, int *cnt)
@@ -18,7 +20,13 @@ vcprintf(const char *fmt, va_list ap)
 {
 	int cnt = 0;
 
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_lock(&console_lock);
+#endif
 	vprintfmt((void*)putch, &cnt, fmt, ap);
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&console_lock);
+#endif
 	return cnt;
 }
 

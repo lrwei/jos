@@ -266,4 +266,14 @@ wrmsr(uint32_t msr, uint64_t val)
 {
     asm volatile("wrmsr" : : "c" (msr), "A" (val));
 }
+
+// Compiler barrier, also used as
+// `atomic_thread_fence(memory_order_{acquire, release})`
+// since x86 is strongly ordered by default.
+static inline void
+barrier(void)
+{
+    asm volatile("" : : : "memory");
+}
+
 #endif /* !JOS_INC_X86_H */

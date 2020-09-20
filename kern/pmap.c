@@ -10,6 +10,7 @@
 #include <kern/kclock.h>
 #include <kern/env.h>
 #include <kern/cpu.h>
+#include <kern/spinlock.h>
 
 // These variables are set by i386_detect_memory()
 size_t npages;			// Amount of physical memory (in pages)
@@ -367,6 +368,9 @@ page_alloc(int alloc_flags)
 	// Fill this function in
         struct PageInfo *pp;
 
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_lock(&page_lock);
+#endif
         if ((pp = page_free_list)) {
             page_free_list = pp->pp_link;
             pp->pp_link = NULL;
@@ -377,6 +381,9 @@ page_alloc(int alloc_flags)
                 memset(page2kva(pp), 0, PGSIZE);
             }
         }
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&page_lock);
+#endif
 
 	return pp;
 }
@@ -404,12 +411,18 @@ page_free(struct PageInfo *pp)
 void
 page_decref(struct PageInfo* pp)
 {
+#ifdef USE_FINE_GRAINED_LOCK
+    spin_lock(&page_lock);
+#endif
     // Catch programming error of failing to increase the `pp_ref` field.
     assert(pp->pp_ref != 0);
 
     if (--pp->pp_ref == 0) {
         page_free(pp);
     }
+#ifdef USE_FINE_GRAINED_LOCK
+    spin_unlock(&page_lock);
+#endif
 }
 
 // Given 'pgdir', a pointer to a page directory, pgdir_walk returns
@@ -450,6 +463,7 @@ pgdir_walk(pde_t *pgdir, const void *va, int create)
             if (!create || !(pp = page_alloc(ALLOC_ZERO))) {
                 return NULL;
             }
+            // This page can't be shared, so no lock is needed.
             pp->pp_ref++;
             *pde = page2pa(pp) | PTE_U | PTE_W | PTE_P;
         }
@@ -529,7 +543,14 @@ page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
             return -E_NO_MEM;
         }
 
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_lock(&page_lock);
+#endif
         pp->pp_ref++;
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&page_lock);
+#endif
+
         if (*pte & PTE_P) {
             page_remove(pgdir, va);
         }

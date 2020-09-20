@@ -5,6 +5,8 @@
 #include <inc/x86.h>
 #include <inc/memlayout.h>
 #include <inc/string.h>
+#include <inc/env.h>
+
 #include <kern/cpu.h>
 #include <kern/spinlock.h>
 #include <kern/kdebug.h>
@@ -15,6 +17,32 @@ struct spinlock kernel_lock = {
 	.name = "kernel_lock"
 #endif
 };
+
+#ifdef USE_FINE_GRAINED_LOCK
+struct spinlock console_lock = {
+#ifdef DEBUG_SPINLOCK
+    .name = "console_lock"
+#endif
+};
+
+struct spinlock page_lock = {
+#ifdef DEBUG_SPINLOCK
+    .name = "page_lock"
+#endif
+};
+
+struct spinlock env_list_lock = {
+#ifdef DEBUG_SPINLOCK
+    .name = "env_list_lock"
+#endif
+};
+
+struct spinlock sched_lock = {
+#ifdef DEBUG_SPINLOCK
+    .name = "sched_lock"
+#endif
+};
+#endif
 
 #ifdef DEBUG_SPINLOCK
 // Record the current call stack in pcs[] by following the %ebp chain.
@@ -34,14 +62,14 @@ get_caller_pcs(uint32_t pcs[])
 	for (; i < 10; i++)
 		pcs[i] = 0;
 }
+#endif
 
 // Check whether this CPU is holding the lock.
-static int
+bool
 holding(struct spinlock *lock)
 {
 	return lock->locked && lock->cpu == thiscpu;
 }
-#endif
 
 void
 __spin_initlock(struct spinlock *lk, char *name)
@@ -53,16 +81,37 @@ __spin_initlock(struct spinlock *lk, char *name)
 #endif
 }
 
+static void
+print_lock(const char *s, struct spinlock *lk)
+{
+#if defined(USE_FINE_GRAINED_LOCK)
+    struct Env *e;
+
+    if (lk->name[0] != '&') {
+        cprintf("CPU %d: %s lock %s\n", cpunum(), s, lk->name);
+    } else {
+        e = (struct Env *) ((void *) lk - offsetof(struct Env, env_lock));
+        cprintf("CPU %d: %s lock of env [%08x]\n", cpunum(), s, e->env_id);
+    }
+#endif
+}
+
 // Acquire the lock.
 // Loops (spins) until the lock is acquired.
 // Holding a lock for a long time may cause
 // other CPUs to waste time spinning to acquire it.
 void
-spin_lock(struct spinlock *lk)
+__spin_lock(struct spinlock *lk, const char *filename, int line, bool print)
 {
 #ifdef DEBUG_SPINLOCK
-	if (holding(lk))
-		panic("CPU %d cannot acquire %s: already holding", cpunum(), lk->name);
+	if (holding(lk)) {
+            cprintf("at %s: %d\n", filename, line);
+            panic("CPU %d cannot acquire %s: already holding", cpunum(), lk->name);
+        }
+
+        if (print) {
+            print_lock("acquiring", lk);
+        }
 #endif
 
 	// The xchg is atomic.
@@ -73,6 +122,10 @@ spin_lock(struct spinlock *lk)
 
 	// Record info about lock acquisition for debugging.
 #ifdef DEBUG_SPINLOCK
+        if (print) {
+            print_lock("got", lk);
+        }
+
 	lk->cpu = thiscpu;
 	get_caller_pcs(lk->pcs);
 #endif
@@ -80,7 +133,7 @@ spin_lock(struct spinlock *lk)
 
 // Release the lock.
 void
-spin_unlock(struct spinlock *lk)
+__spin_unlock(struct spinlock *lk, const char *filename, int line, bool print)
 {
 #ifdef DEBUG_SPINLOCK
 	if (!holding(lk)) {
@@ -105,6 +158,10 @@ spin_unlock(struct spinlock *lk)
 
 	lk->pcs[0] = 0;
 	lk->cpu = 0;
+
+        if (print) {
+            print_lock("releasing", lk);
+        }
 #endif
 
 	// The xchg instruction is atomic (i.e. uses the "lock" prefix) with

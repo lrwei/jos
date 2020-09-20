@@ -43,10 +43,9 @@ i386_init(void)
 
 	// Acquire the big kernel lock before waking up APs
 	// Your code here:
+#ifndef USE_FINE_GRAINED_LOCK
         lock_kernel();
-
-	// Starting non-boot CPUs
-	boot_aps();
+#endif
 
 #if defined(TEST)
 	// Don't touch -- used by grading script!
@@ -61,6 +60,9 @@ i386_init(void)
 	ENV_CREATE(user_stresssched, ENV_TYPE_USER);
 	ENV_CREATE(user_stresssched, ENV_TYPE_USER);
 #endif // TEST*
+
+	// Starting non-boot CPUs
+	boot_aps();
 
 	// Schedule and run the first user environment!
 	sched_yield();
@@ -119,7 +121,9 @@ mp_main(void)
 	// only one CPU can enter the scheduler at a time!
 	//
 	// Your code here:
+#ifndef USE_FINE_GRAINED_LOCK
         lock_kernel();
+#endif
         sched_yield();
 
 	// Remove this after you finish Exercise 6

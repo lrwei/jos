@@ -5,6 +5,7 @@
 
 // Comment this to disable spinlock debugging
 #define DEBUG_SPINLOCK
+#define USE_FINE_GRAINED_LOCK
 
 // Mutual exclusion lock.
 struct spinlock {
@@ -19,11 +20,25 @@ struct spinlock {
 #endif
 };
 
-void __spin_initlock(struct spinlock *lk, char *name);
-void spin_lock(struct spinlock *lk);
-void spin_unlock(struct spinlock *lk);
+#ifdef USE_FINE_GRAINED_LOCK
+extern struct spinlock console_lock;
+// Guard both `page_free_list` and each individual pages.
+extern struct spinlock page_lock;
+extern struct spinlock env_list_lock;
+extern struct spinlock sched_lock;
+#endif
 
-#define spin_initlock(lock)   __spin_initlock(lock, #lock)
+void __spin_initlock(struct spinlock *lk, char *name);
+void __spin_lock(struct spinlock *lk, const char *filename, int line, bool is_env);
+void __spin_unlock(struct spinlock *lk, const char *filename, int line, bool is_env);
+bool holding(struct spinlock *lk);
+
+#define spin_initlock(lock)             __spin_initlock(lock, #lock)
+
+#define spin_lock(lock)                 __spin_lock(lock, __FILE__, __LINE__, false)
+#define spin_lock__do_print(lock)       __spin_lock(lock, __FILE__, __LINE__, true)
+#define spin_unlock(lock)               __spin_unlock(lock, __FILE__, __LINE__, false)
+#define spin_unlock__do_print(lock)     __spin_unlock(lock, __FILE__, __LINE__, true)
 
 extern struct spinlock kernel_lock;
 

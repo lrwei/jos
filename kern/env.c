@@ -78,9 +78,13 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
 	struct Env *e;
 
 	// If envid is zero, return the current environment.
-	if (envid == 0) {
-		*env_store = curenv;
-		return 0;
+	if (envid == 0 || &envs[ENVX(envid)] == curenv) {
+#ifdef USE_FINE_GRAINED_LOCK
+            // This lock must have been taken, when entering the kernel.
+            assert(holding(&curenv->env_lock));
+#endif
+	    *env_store = curenv;
+	    return 0;
 	}
 
 	// Look up the Env structure via the index part of the envid,
@@ -89,9 +93,13 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
 	// (i.e., does not refer to a _previous_ environment
 	// that used the same slot in the envs[] array).
 	e = &envs[ENVX(envid)];
+
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_lock(&e->env_lock);
+#endif
+
 	if (e->env_status == ENV_FREE || e->env_id != envid) {
-		*env_store = 0;
-		return -E_BAD_ENV;
+            goto bad;
 	}
 
 	// Check that the calling environment has legitimate permission
@@ -100,12 +108,17 @@ envid2env(envid_t envid, struct Env **env_store, bool checkperm)
 	// must be either the current environment
 	// or an immediate child of the current environment.
 	if (checkperm && e != curenv && e->env_parent_id != curenv->env_id) {
-		*env_store = 0;
-		return -E_BAD_ENV;
+            goto bad;
 	}
 
 	*env_store = e;
 	return 0;
+bad:
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&e->env_lock);
+#endif
+        *env_store = 0;
+        return -E_BAD_ENV;
 }
 
 // Mark all environments in 'envs' as free, set their env_ids to 0,
@@ -216,12 +229,24 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
 	int r;
 	struct Env *e;
 
-	if (!(e = env_free_list))
-		return -E_NO_FREE_ENV;
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_lock(&env_list_lock);
+#endif
+	if (!(e = env_free_list)) {
+            r = -E_NO_FREE_ENV;
+            goto bad;
+        }
 
 	// Allocate and set up the page directory for this environment.
-	if ((r = env_setup_vm(e)) < 0)
-		return r;
+	if ((r = env_setup_vm(e)) < 0) {
+            goto bad;
+        }
+
+	// commit eager allocation
+	env_free_list = e->env_link;
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&env_list_lock);
+#endif
 
 	// Generate an env_id for this environment.
 	generation = (e->env_id + (1 << ENVGENSHIFT)) & ~(NENV - 1);
@@ -232,7 +257,6 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
 	// Set the basic status variables.
 	e->env_parent_id = parent_id;
 	e->env_type = ENV_TYPE_USER;
-	e->env_status = ENV_RUNNABLE;
 	e->env_runs = 0;
 
 	// Clear out all the saved register state,
@@ -271,12 +295,23 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
         e->env_ipc_pending_first = -1;
         e->env_ipc_pending_last = -1;
 
-	// commit the allocation
-	env_free_list = e->env_link;
+#ifdef USE_FINE_GRAINED_LOCK
+        // Initialize per-env lock.
+        spin_initlock(&e->env_lock);
+#endif
+
+        // Updating of `env_status` is left to the caller.
+        assert(e->env_status == ENV_FREE);
 	*newenv_store = e;
 
 	cprintf("[%08x] new env %08x\n", curenv ? curenv->env_id : 0, e->env_id);
 	return 0;
+
+bad:
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&env_list_lock);
+#endif
+        return r;
 }
 
 //
@@ -419,6 +454,9 @@ env_create(uint8_t *binary, enum EnvType type)
         assert(r == 0);
         load_icode(e, binary);
         e->env_type = type;
+
+        barrier();
+        e->env_status = ENV_RUNNABLE;
 }
 
 //
@@ -430,6 +468,12 @@ env_free(struct Env *e)
 	pte_t *pt;
 	uint32_t pdeno, pteno;
 	physaddr_t pa;
+
+        // Make it clear for the scheduler as soon as possible.
+	e->env_status = ENV_FREE;
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&sched_lock);
+#endif
 
 	// If freeing the current environment, switch to kern_pgdir
 	// before freeing the page directory, just in case the page
@@ -468,10 +512,19 @@ env_free(struct Env *e)
 	e->env_pgdir = 0;
 	page_decref(pa2page(pa));
 
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&e->env_lock);
+#endif
+
 	// return the environment to the free list
-	e->env_status = ENV_FREE;
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_lock(&env_list_lock);
+#endif
 	e->env_link = env_free_list;
 	env_free_list = e;
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&env_list_lock);
+#endif
 }
 
 //
@@ -482,11 +535,20 @@ env_free(struct Env *e)
 void
 env_destroy(struct Env *e)
 {
+#ifdef USE_FINE_GRAINED_LOCK
+        assert(holding(&e->env_lock));
+        spin_lock(&sched_lock);
+#endif
+
 	// If e is currently running on other CPUs, we change its state to
 	// ENV_DYING. A zombie environment will be freed the next time
 	// it traps to the kernel.
 	if (e->env_status == ENV_RUNNING && curenv != e) {
 		e->env_status = ENV_DYING;
+#ifdef USE_FINE_GRAINED_LOCK
+                spin_unlock(&sched_lock);
+                spin_unlock(&e->env_lock);
+#endif
 		return;
 	}
 
@@ -549,12 +611,29 @@ env_run(struct Env *e)
 	//	e->env_tf to sensible values.
 
 	// LAB 3: Your code here.
+#ifdef USE_FINE_GRAINED_LOCK
+        if (e == curenv) {
+            // Called through `env_run(curenv)` or if the scheduler failed
+            // to find any runnable env other than the currently running one.
+            assert(e->env_status == ENV_RUNNING);
+        } else {
+            if (curenv && curenv->env_status == ENV_RUNNING) {
+                curenv->env_status = ENV_RUNNABLE;
+            }
+            e->env_status = ENV_RUNNING;
+            spin_unlock(&sched_lock);
+        }
+        if (curenv) {
+            spin_unlock(&curenv->env_lock);
+        }
+#else
         if (curenv && curenv->env_status == ENV_RUNNING) {
             curenv->env_status = ENV_RUNNABLE;
         }
         e->env_status = ENV_RUNNING;
-        // Any modification to env_status must be serialized.
+        // Any modification to `env_status` must be serialized.
         unlock_kernel();
+#endif
 
         curenv = e;
         e->env_runs++;

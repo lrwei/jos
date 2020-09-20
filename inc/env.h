@@ -7,6 +7,8 @@
 #include <inc/trap.h>
 #include <inc/memlayout.h>
 
+#include <kern/spinlock.h>
+
 typedef int32_t envid_t;
 
 // An environment ID 'envid_t' has three parts:
@@ -80,6 +82,11 @@ struct Env {
             envid_t env_ipc_from;       // envid of the sender
             envid_t env_ipc_pending_next;
         };
+
+#ifdef USE_FINE_GRAINED_LOCK
+        // Lab 4 Fine-grained locking
+        struct spinlock env_lock;
+#endif
 };
 
 #endif // !JOS_INC_ENV_H

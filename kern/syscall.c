@@ -11,6 +11,7 @@
 #include <kern/syscall.h>
 #include <kern/console.h>
 #include <kern/sched.h>
+#include <kern/spinlock.h>
 
 // Print a string to the system console.
 // The string is exactly 'len' characters long.
@@ -33,6 +34,7 @@ sys_cputs(const char *s, size_t len)
 static int
 sys_cgetc(void)
 {
+        // XXX: Still lack of the concept of "terminal"s.
 	return cons_getc();
 }
 
@@ -54,8 +56,14 @@ sys_env_destroy(envid_t envid)
 	int r;
 	struct Env *e;
 
-	if ((r = envid2env(envid, &e, 1)) < 0)
-		return r;
+	if ((r = envid2env(envid, &e, 1)) < 0) {
+#ifdef USE_FINE_GRAINED_LOCK
+            if (e != curenv) {
+                spin_unlock(&e->env_lock);
+            }
+#endif
+            return r;
+        }
 	if (e == curenv)
 		cprintf("[%08x] exiting gracefully\n", curenv->env_id);
 	else
@@ -122,14 +130,23 @@ sys_env_set_status(envid_t envid, int status)
 
         r = envid2env(envid, &e, true);
         if (r < 0) {
-            return r;
+            goto exit;
         }
         if (status != ENV_RUNNABLE && status != ENV_NOT_RUNNABLE) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
 
+        barrier();
         e->env_status = status;
-        return 0;
+
+exit:
+#ifdef USE_FINE_GRAINED_LOCK
+        if (e != curenv) {
+            spin_unlock(&e->env_lock);
+        }
+#endif
+        return r;
 }
 
 // Set the page fault upcall for 'envid' by modifying the corresponding struct
@@ -149,11 +166,18 @@ sys_env_set_pgfault_upcall(envid_t envid, void *func)
 
         r = envid2env(envid, &e, true);
         if (r < 0) {
-            return r;
+            goto exit;
         }
 
         e->env_pgfault_upcall = func;
-        return 0;
+
+exit:
+#ifdef USE_FINE_GRAINED_LOCK
+        if (e != curenv) {
+            spin_unlock(&e->env_lock);
+        }
+#endif
+        return r;
 }
 
 // Allocate a page of memory and map it at 'va' with permission
@@ -189,27 +213,42 @@ sys_page_alloc(envid_t envid, void *va, int perm)
 
         r = envid2env(envid, &e, true);
         if (r < 0) {
-            return r;
+            goto exit;
         }
 
         if ((uintptr_t) va >= UTOP || va != ROUNDUP(va, PGSIZE)) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
         if (!(PTE_P & perm) || !(PTE_U & perm) || perm & ~PTE_SYSCALL) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
 
         p = page_alloc(ALLOC_ZERO);
         if (!p) {
-            return -E_NO_MEM;
+            r = -E_NO_MEM;
+            goto exit;
         }
         r = page_insert(e->env_pgdir, p, va, perm);
         if (r < 0) {
+#ifdef USE_FINE_GRAINED_LOCK
+            spin_lock(&page_lock);
+#endif
             page_free(p);
-            return r;
+#ifdef USE_FINE_GRAINED_LOCK
+            spin_unlock(&page_lock);
+#endif
+            goto exit;
         }
 
-        return 0;
+exit:
+#ifdef USE_FINE_GRAINED_LOCK
+        if (e != curenv) {
+            spin_unlock(&e->env_lock);
+        }
+#endif
+        return r;
 }
 
 // Map the page of memory at 'srcva' in srcenvid's address space
@@ -247,38 +286,54 @@ sys_page_map(envid_t srcenvid, void *srcva,
 
         r = envid2env(srcenvid, &srcenv, true);
         if (r < 0) {
-            return r;
+            goto _exit;
         }
         r = envid2env(dstenvid, &dstenv, true);
         if (r < 0) {
-            return r;
+            goto exit;
         }
 
         if ((uintptr_t) srcva >= UTOP || (uintptr_t) dstva >= UTOP
                 || srcva != ROUNDUP(srcva, PGSIZE)
                 || dstva != ROUNDUP(dstva, PGSIZE)) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
 
         p = page_lookup(srcenv->env_pgdir, srcva, &pte);
         if (!p) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
 
         if (!(PTE_P & perm) || !(PTE_U & perm) || perm & ~PTE_SYSCALL) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
 
         if ((PTE_W & perm) && !(PTE_W & *pte)) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
 
         r = page_insert(dstenv->env_pgdir, p, dstva, perm);
         if (r < 0) {
-            return r;
+            goto exit;
         }
 
-        return 0;
+exit:
+#ifdef USE_FINE_GRAINED_LOCK
+        if (dstenv != curenv) {
+            spin_unlock(&dstenv->env_lock);
+        }
+#endif
+_exit:
+#ifdef USE_FINE_GRAINED_LOCK
+        if (srcenv != curenv) {
+            spin_unlock(&srcenv->env_lock);
+        }
+#endif
+        return r;
 }
 
 // Unmap the page of memory at 'va' in the address space of 'envid'.
@@ -299,15 +354,23 @@ sys_page_unmap(envid_t envid, void *va)
 
         r = envid2env(envid, &e, true);
         if (r < 0) {
-            return r;
+            goto exit;
         }
 
         if ((uintptr_t) va >= UTOP || va != ROUNDUP(va, PGSIZE)) {
-            return -E_INVAL;
+            r = -E_INVAL;
+            goto exit;
         }
 
         page_remove(e->env_pgdir, va);
-        return 0;
+
+exit:
+#ifdef USE_FINE_GRAINED_LOCK
+        if (e != curenv) {
+            spin_unlock(&e->env_lock);
+        }
+#endif
+        return r;
 }
 
 // Try to send 'value' to the target env 'envid'.
@@ -375,7 +438,7 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
 
         r = envid2env(envid, &e, false);
         if (r < 0) {
-            return r;
+            goto exit;
         }
 
         if (e == curenv) {
@@ -387,7 +450,11 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
                 struct Env *lastenv;
 
                 assert(!envid2env(e->env_ipc_pending_last, &lastenv, false));
+                assert(lastenv != curenv);
                 lastenv->env_ipc_pending_next = curenv->env_id;
+#ifdef USE_FINE_GRAINED_LOCK
+                spin_unlock(&lastenv->env_lock);
+#endif
             } else {
                 e->env_ipc_pending_first = curenv->env_id;
             }
@@ -398,17 +465,19 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
             curenv->env_ipc_pending_perm = perm;
             curenv->env_ipc_pending_next = -1;
 
+            barrier();
             curenv->env_status = ENV_NOT_RUNNABLE;
             // Not a real return, as curenv has been marked as NOT_RUNNABLE.
             // Yield scheduler through trap() instead.
-            return -E_UNSPECIFIED;
+            r = -E_UNSPECIFIED;
+            goto exit;
         }
 
         assert(e->env_ipc_pending_first == -1);
         if ((uintptr_t) e->env_ipc_dstva < UTOP && p) {
             r = page_insert(e->env_pgdir, p, e->env_ipc_dstva, perm);
             if (r < 0) {
-                return r;
+                goto exit;
             }
             e->env_ipc_perm = perm;
         } else {
@@ -418,11 +487,16 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
         e->env_ipc_recving = false;
         e->env_ipc_value = value;
         e->env_ipc_from = curenv->env_id;
-
         e->env_tf.tf_regs.reg_eax = 0;
+
+        barrier();
         e->env_status = ENV_RUNNABLE;
 
-        return 0;
+exit:
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&e->env_lock);
+#endif
+        return r;
 }
 
 // Block until a value is ready.  Record that you want to receive
@@ -454,15 +528,15 @@ retry:
             curenv->env_ipc_recving = true;
             curenv->env_ipc_dstva = dstva;
 
+            barrier();
             curenv->env_status = ENV_NOT_RUNNABLE;
             // Not a real return, as curenv has been marked as NOT_RUNNABLE.
             // Yield scheduler through trap() instead.
             return -E_UNSPECIFIED;
-        } else if (r < 0) {
-            return r;
         }
 
         assert(!envid2env(curenv->env_ipc_pending_first, &e, false));
+        assert(e != curenv);
         curenv->env_ipc_pending_first = e->env_ipc_pending_next;
 
         if ((uintptr_t) dstva < UTOP && e->env_ipc_pending_page) {
@@ -471,7 +545,12 @@ retry:
             if (r < 0) {
                 // Inform all pending senders that we ran out of memory.
                 e->env_tf.tf_regs.reg_eax = r;
+
+                barrier();
                 e->env_status = ENV_RUNNABLE;
+#ifdef USE_FINE_GRAINED_LOCK
+                spin_unlock(&e->env_lock);
+#endif
                 goto retry;
             }
             curenv->env_ipc_perm = e->env_ipc_pending_perm;
@@ -480,10 +559,14 @@ retry:
         }
         curenv->env_ipc_value = e->env_ipc_pending_value;
         curenv->env_ipc_from = e->env_id;
-
         e->env_tf.tf_regs.reg_eax = 0;
+
+        barrier();
         e->env_status = ENV_RUNNABLE;
 
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&e->env_lock);
+#endif
         return 0;
 }
 

@@ -251,8 +251,14 @@ trap(struct Trapframe *tf)
 
 	// Re-acqurie the big kernel lock if we were halted in
 	// sched_yield()
-	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED)
-		lock_kernel();
+	if (xchg(&thiscpu->cpu_status, CPU_STARTED) == CPU_HALTED) {
+#ifdef USE_FINE_GRAINED_LOCK
+            ;
+#else
+            lock_kernel();
+#endif
+        }
+
 	// Check that interrupts are disabled.  If this assertion
 	// fails, DO NOT be tempted to fix it by inserting a "cli" in
 	// the interrupt path.
@@ -267,13 +273,15 @@ trap(struct Trapframe *tf)
 		// serious kernel work.
 		// LAB 4: Your code here.
 		assert(curenv);
+#ifdef USE_FINE_GRAINED_LOCK
+                spin_lock(&curenv->env_lock);
+#else
                 lock_kernel();
+#endif
 
 		// Garbage collect if current enviroment is a zombie
 		if (curenv->env_status == ENV_DYING) {
-			env_free(curenv);
-			curenv = NULL;
-			sched_yield();
+                    env_destroy(curenv);
 		}
 
 		// Copy trap frame (which is currently on the stack)

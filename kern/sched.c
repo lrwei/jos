@@ -29,20 +29,39 @@ sched_yield(void)
 	// below to halt the cpu.
 
 	// LAB 4: Your code here.
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_lock(&sched_lock);
+#endif
+
         idle = curenv ? curenv : &envs[-1];
         for (int i = 0; i < NENV; i++) {
             if (++idle == envs + NENV) {
                 idle = &envs[0];
             }
             if (idle->env_status == ENV_RUNNABLE) {
+                // Hold `sched_lock` until `env_status` receive their
+                // new value.
                 env_run(idle);
             }
         }
 
-        assert(!curenv || curenv == idle);
         if (idle->env_status == ENV_RUNNING) {
+            assert(curenv == idle);
+#ifdef USE_FINE_GRAINED_LOCK
+            // No `env_status` will be changed below, safe to unlock
+            // the scheduler.
+            spin_unlock(&sched_lock);
+#endif
             env_run(curenv);
         }
+
+#ifdef USE_FINE_GRAINED_LOCK
+        // In case that `curenv` set itself to be unrunnable.
+        if (curenv) {
+            assert(curenv->env_status == ENV_NOT_RUNNABLE);
+            spin_unlock(&curenv->env_lock);
+        }
+#endif
 
 	// sched_halt never returns
 	sched_halt();
@@ -79,8 +98,12 @@ sched_halt(void)
 	// big kernel lock
 	xchg(&thiscpu->cpu_status, CPU_HALTED);
 
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&sched_lock);
+#else
 	// Release the big kernel lock as if we were "leaving" the kernel
 	unlock_kernel();
+#endif
 
 	// Reset stack pointer, enable interrupts and then halt.
 	asm volatile (
