@@ -290,6 +290,7 @@ env_alloc(struct Env **newenv_store, envid_t parent_id)
 
 	// Also clear the IPC receiving flag.
 	e->env_ipc_recving = 0;
+        e->_env_ipc_sending = false;
 
         // Initialize IPC pending list.
         e->env_ipc_pending_first = -1;
@@ -459,6 +460,38 @@ env_create(uint8_t *binary, enum EnvType type)
         e->env_status = ENV_RUNNABLE;
 }
 
+void env_ipc_enqueue(struct Env *recvenv, struct Env *sendenv)
+{
+    assert(holding(&recvenv->env_lock));
+    assert(holding(&sendenv->env_lock));
+
+    if (recvenv->env_ipc_pending_first >= 0) {
+        struct Env *lastenv;
+
+        assert(!envid2env(recvenv->env_ipc_pending_last, &lastenv, false));
+        lastenv->env_ipc_pending_next = sendenv->env_id;
+#ifdef USE_FINE_GRAINED_LOCK
+        spin_unlock(&lastenv->env_lock);
+#endif
+    } else {
+        recvenv->env_ipc_pending_first = sendenv->env_id;
+    }
+    recvenv->env_ipc_pending_last = sendenv->env_id;
+    sendenv->_env_ipc_sending = true;
+}
+
+void
+env_ipc_dequeue(struct Env *recvenv, struct Env **psendenv)
+{
+    struct Env *sendenv;
+
+    assert(holding(&recvenv->env_lock));
+    assert(!envid2env(recvenv->env_ipc_pending_first, &sendenv, false));
+    recvenv->env_ipc_pending_first = sendenv->env_ipc_pending_next;
+    sendenv->_env_ipc_sending = false;
+    *psendenv = sendenv;
+}
+
 //
 // Frees env e and all memory it uses.
 //
@@ -511,6 +544,23 @@ env_free(struct Env *e)
 	pa = PADDR(e->env_pgdir);
 	e->env_pgdir = 0;
 	page_decref(pa2page(pa));
+
+        // Inform pending envs of the demise of their target.
+        while (e->env_ipc_pending_first >= 0) {
+            struct Env *nextenv;
+
+            env_ipc_dequeue(e, &nextenv);
+            nextenv->env_tf.tf_regs.reg_eax = -E_BAD_ENV;
+
+            barrier();
+            nextenv->env_status = ENV_RUNNABLE;
+#ifdef USE_FINE_GRAINED_LOCK
+            spin_unlock(&nextenv->env_lock);
+#endif
+        }
+
+        // XXX: Pending IPC has not been handled yet.
+        assert(!e->_env_ipc_sending);
 
 #ifdef USE_FINE_GRAINED_LOCK
         spin_unlock(&e->env_lock);

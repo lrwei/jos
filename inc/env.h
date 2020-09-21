@@ -63,6 +63,7 @@ struct Env {
 
 	// Lab 4 IPC
 	bool env_ipc_recving;		// Env is blocked receiving
+        bool _env_ipc_sending;		// Env is blocked sending
         envid_t env_ipc_pending_first;  // The first pending sender
         envid_t env_ipc_pending_last;   // The last pending sender
 

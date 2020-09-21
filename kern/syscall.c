@@ -446,19 +446,7 @@ sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, unsigned perm)
         }
 
         if (!e->env_ipc_recving) {
-            if (e->env_ipc_pending_first >= 0) {
-                struct Env *lastenv;
-
-                assert(!envid2env(e->env_ipc_pending_last, &lastenv, false));
-                assert(lastenv != curenv);
-                lastenv->env_ipc_pending_next = curenv->env_id;
-#ifdef USE_FINE_GRAINED_LOCK
-                spin_unlock(&lastenv->env_lock);
-#endif
-            } else {
-                e->env_ipc_pending_first = curenv->env_id;
-            }
-            e->env_ipc_pending_last = curenv->env_id;
+            env_ipc_enqueue(e, curenv);
 
             curenv->env_ipc_pending_value = value;
             curenv->env_ipc_pending_page = p;
@@ -535,10 +523,7 @@ retry:
             return -E_UNSPECIFIED;
         }
 
-        assert(!envid2env(curenv->env_ipc_pending_first, &e, false));
-        assert(e != curenv);
-        curenv->env_ipc_pending_first = e->env_ipc_pending_next;
-
+        env_ipc_dequeue(curenv, &e);
         if ((uintptr_t) dstva < UTOP && e->env_ipc_pending_page) {
             r = page_insert(curenv->env_pgdir, e->env_ipc_pending_page,
                     dstva, e->env_ipc_pending_perm);
