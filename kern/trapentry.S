@@ -138,7 +138,9 @@ sysenter_handler:
 
         # The user of SYSENTER must guarantee that
         # the actual system call will never use more than 4 arguments.
-        call    syscall
+        # Use wrapper to lock and unlock `curenv` before and after
+        # doing serious work in `syscall`.
+        call    syscall_wrapper
 
         # Both %esi and %ebp are callee-saved register.
         # SYSEXIT will load %eip and %esp from %edx and %ecx respectively.

@@ -99,7 +99,7 @@ def run_tests():
     (options, args) = parser.parse_args()
 
     # Start with a full build to catch build errors
-    make()
+    make("-j8")
 
     # Clean the file system if there is one
     reset_fs()

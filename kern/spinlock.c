@@ -68,7 +68,11 @@ get_caller_pcs(uint32_t pcs[])
 bool
 holding(struct spinlock *lock)
 {
-	return lock->locked && lock->cpu == thiscpu;
+	return lock->locked
+#ifdef DEBUG_SPINLOCK
+            && lock->cpu == thiscpu
+#endif
+            ;
 }
 
 void
@@ -84,7 +88,7 @@ __spin_initlock(struct spinlock *lk, char *name)
 static void
 print_lock(const char *s, struct spinlock *lk)
 {
-#if defined(USE_FINE_GRAINED_LOCK)
+#if defined(USE_FINE_GRAINED_LOCK) && defined(DEBUG_SPINLOCK)
     struct Env *e;
 
     if (lk->name[0] != '&') {

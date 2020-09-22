@@ -555,6 +555,26 @@ retry:
         return 0;
 }
 
+// Handling lock in fast system call path.
+int32_t
+syscall_wrapper(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4)
+{
+    int32_t r;
+
+#ifdef USE_FINE_GRAINED_LOCK
+    spin_lock(&curenv->env_lock);
+#else
+    lock_kernel();
+#endif
+    r = syscall(syscallno, a1, a2, a3, a4, 0);
+#ifdef USE_FINE_GRAINED_LOCK
+    spin_unlock(&curenv->env_lock);
+#else
+    unlock_kernel();
+#endif
+    return r;
+}
+
 // Dispatches to the correct kernel function, passing the arguments.
 int32_t
 syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5)

@@ -462,8 +462,10 @@ env_create(uint8_t *binary, enum EnvType type)
 
 void env_ipc_enqueue(struct Env *recvenv, struct Env *sendenv)
 {
+#ifdef USE_FINE_GRAINED_LOCK
     assert(holding(&recvenv->env_lock));
     assert(holding(&sendenv->env_lock));
+#endif
 
     if (recvenv->env_ipc_pending_first >= 0) {
         struct Env *lastenv;
@@ -485,7 +487,9 @@ env_ipc_dequeue(struct Env *recvenv, struct Env **psendenv)
 {
     struct Env *sendenv;
 
+#ifdef USE_FINE_GRAINED_LOCK
     assert(holding(&recvenv->env_lock));
+#endif
     assert(!envid2env(recvenv->env_ipc_pending_first, &sendenv, false));
     recvenv->env_ipc_pending_first = sendenv->env_ipc_pending_next;
     sendenv->_env_ipc_sending = false;
