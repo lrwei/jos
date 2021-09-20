@@ -198,10 +198,13 @@ mem_init(void)
 	// we just set up the mapping anyway.
 	// Permissions: kernel RW, user NONE
 	// Your code goes here:
-	boot_map_region(kern_pgdir, KERNBASE, -KERNBASE, 0, PTE_W);
+	boot_map_region(kern_pgdir, KERNBASE, -KERNBASE, 0, PTE_PS | PTE_W);
 
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
+
+	// Enable page-size-extension by setting the corresponding bit in cr4.
+	lcr4(rcr4() | CR4_PSE);
 
 	// Switch from the minimal entry page directory to the full kern_pgdir
 	// page table we just created.	Our instruction pointer should be
@@ -353,6 +356,9 @@ pgdir_walk(pde_t *pgdir, const void *va, bool create)
 	pde_t *pde = &pgdir[PDX(va)];
 	pte_t *pgtbl;
 
+	// Walking on size-extended page is not supported.
+	assert((*pde & PTE_PS) == 0);
+
 	if (!(*pde & PTE_P)) {
 		struct PageInfo *pp;
 
@@ -381,6 +387,15 @@ boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm
 {
 	// Fill this function in
 	assert(va >= UTOP);
+
+	if (perm & PTE_PS) {
+		for ( ; size > 0; size -= PTSIZE) {
+			pgdir[PDX(va)] = pa | perm | PTE_P;
+			va += PTSIZE;
+			pa += PTSIZE;
+		}
+		return;
+	}
 
 	for ( ; size > 0; size -= PGSIZE) {
 		pte_t *pte = pgdir_walk(pgdir, (void *) va, true);
@@ -707,6 +722,8 @@ check_va2pa(pde_t *pgdir, uintptr_t va)
 	pgdir = &pgdir[PDX(va)];
 	if (!(*pgdir & PTE_P))
 		return ~0;
+	if (*pgdir & PTE_PS)
+		return PTE_ADDR(*pgdir) | (PTX(va) << PGSHIFT);
 	p = (pte_t*) KADDR(PTE_ADDR(*pgdir));
 	if (!(p[PTX(va)] & PTE_P))
 		return ~0;
