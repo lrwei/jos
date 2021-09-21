@@ -12,7 +12,14 @@ struct Env;
 
 extern char bootstacktop[], bootstack[];
 
-extern struct PageInfo *pages;
+struct PhysMemoryPool {
+	uintptr_t start;
+	size_t size;
+	struct PageInfo *pages;
+#define BUDDY_MAX_ORDER		(14ul)
+	struct PageInfo *free_lists[BUDDY_MAX_ORDER + 1];
+};
+extern struct PhysMemoryPool pool;
 extern size_t npages;
 
 extern pde_t *kern_pgdir;
@@ -69,7 +76,7 @@ void	user_mem_assert(struct Env *env, const void *va, size_t len, int perm);
 static inline physaddr_t
 page2pa(struct PageInfo *pp)
 {
-	return (pp - pages) << PGSHIFT;
+	return (pp - pool.pages) << PGSHIFT;
 }
 
 static inline struct PageInfo*
@@ -77,7 +84,7 @@ pa2page(physaddr_t pa)
 {
 	if (PGNUM(pa) >= npages)
 		panic("pa2page called with invalid pa");
-	return &pages[PGNUM(pa)];
+	return &pool.pages[PGNUM(pa)];
 }
 
 static inline void*
@@ -86,6 +93,8 @@ page2kva(struct PageInfo *pp)
 	return KADDR(page2pa(pp));
 }
 
-pte_t *pgdir_walk(pde_t *pgdir, const void *va, int create);
+pte_t *pgdir_walk(pde_t *pgdir, const void *va, bool create);
+struct PageInfo *buddy_get_pages(uint8_t order);
+void buddy_free_pages(struct PageInfo *pp);
 
 #endif /* !JOS_KERN_PMAP_H */

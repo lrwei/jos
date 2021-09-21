@@ -16,9 +16,7 @@ static size_t npages_basemem;	// Amount of base memory (in pages)
 
 // These variables are set in mem_init()
 pde_t *kern_pgdir;		// Kernel's initial page directory
-struct PageInfo *pages;		// Physical page state array
-static struct PageInfo *page_free_list;	// Free list of physical pages
-
+struct PhysMemoryPool pool;
 
 // --------------------------------------------------------------
 // Detect machine's physical memory setup.
@@ -63,6 +61,7 @@ i386_detect_memory(void)
 // --------------------------------------------------------------
 
 static void boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm);
+static void check_buddy(void);
 static void check_page_free_list(bool only_low_memory);
 static void check_page_alloc(void);
 static void check_kern_pgdir(void);
@@ -103,8 +102,10 @@ boot_alloc(uint32_t n)
 	// to a multiple of PGSIZE.
 	//
 	// LAB 2: Your code here.
-
-	return NULL;
+	assert(n <= PTSIZE - PADDR(nextfree));
+	result = nextfree;
+	nextfree += ROUNDUP(n, PGSIZE);
+	return result;
 }
 
 // Set up a two-level page table:
@@ -124,9 +125,6 @@ mem_init(void)
 
 	// Find out how much memory the machine has (npages & npages_basemem).
 	i386_detect_memory();
-
-	// Remove this line when you're ready to test this function.
-	panic("mem_init: This function is not finished\n");
 
 	//////////////////////////////////////////////////////////////////////
 	// create initial page directory.
@@ -150,7 +148,6 @@ mem_init(void)
 	// to initialize all fields of each struct PageInfo to 0.
 	// Your code goes here:
 
-
 	//////////////////////////////////////////////////////////////////////
 	// Make 'envs' point to an array of size 'NENV' of 'struct Env'.
 	// LAB 3: Your code here.
@@ -163,9 +160,12 @@ mem_init(void)
 	// or page_insert
 	page_init();
 
+	check_buddy();
 	check_page_free_list(1);
 	check_page_alloc();
 	check_page();
+	// Second check of buddy system after stealing and restore of pool.
+	check_buddy();
 
 	//////////////////////////////////////////////////////////////////////
 	// Now we set up virtual memory
@@ -177,6 +177,9 @@ mem_init(void)
 	//      (ie. perm = PTE_U | PTE_P)
 	//    - pages itself -- kernel RW, user NONE
 	// Your code goes here:
+	boot_map_region(kern_pgdir, UPAGES,
+			ROUNDUP(sizeof(struct PageInfo) * npages, PGSIZE),
+			PADDR(pool.pages), PTE_U);
 
 	//////////////////////////////////////////////////////////////////////
 	// Map the 'envs' array read-only by the user at linear address UENVS
@@ -197,6 +200,8 @@ mem_init(void)
 	//       overwrite memory.  Known as a "guard page".
 	//     Permissions: kernel RW, user NONE
 	// Your code goes here:
+	boot_map_region(kern_pgdir, KSTACKTOP - KSTKSIZE, KSTKSIZE,
+			PADDR(bootstack), PTE_W);
 
 	//////////////////////////////////////////////////////////////////////
 	// Map all of physical memory at KERNBASE.
@@ -206,9 +211,13 @@ mem_init(void)
 	// we just set up the mapping anyway.
 	// Permissions: kernel RW, user NONE
 	// Your code goes here:
+	boot_map_region(kern_pgdir, KERNBASE, -KERNBASE, 0, PTE_PS | PTE_W);
 
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
+
+	// Enable page-size-extension by setting the corresponding bit in cr4.
+	lcr4(rcr4() | CR4_PSE);
 
 	// Switch from the minimal entry page directory to the full kern_pgdir
 	// page table we just created.	Our instruction pointer should be
@@ -238,6 +247,93 @@ mem_init(void)
 // Pages are reference counted, and free pages are kept on a linked list.
 // --------------------------------------------------------------
 
+static struct PageInfo *get_buddy_chunk(struct PageInfo *pp)
+{
+	uintptr_t chunk_addr;
+	uintptr_t buddy_addr;
+
+	if (pp->pp_order == BUDDY_MAX_ORDER)
+		return NULL;
+
+	chunk_addr = (uintptr_t) page2kva(pp);
+	buddy_addr = chunk_addr ^ ((uintptr_t) 1 << (pp->pp_order + PGSHIFT));
+	if (buddy_addr < pool.start || buddy_addr >= pool.start + pool.size)
+		return NULL;
+
+	return pa2page(PADDR((void *) buddy_addr));
+}
+
+static inline void insert_chunk(struct PageInfo *pp)
+{
+	struct PageInfo *next_pp = pool.free_lists[pp->pp_order];
+
+	assert(pp->pp_prev == NULL);
+	pp->pp_next = next_pp;
+	if (next_pp)
+		next_pp->pp_prev = &pp->pp_next;
+	pool.free_lists[pp->pp_order] = pp;
+	pp->pp_prev = &pool.free_lists[pp->pp_order];
+}
+
+static inline void remove_chunk(struct PageInfo *pp)
+{
+	struct PageInfo *next_pp = pp->pp_next;
+
+	assert(pp->pp_prev != NULL);
+	*pp->pp_prev = next_pp;
+	if (next_pp)
+		next_pp->pp_prev = pp->pp_prev;
+	// Use pp_prev to mark the allocation status of the page.
+	pp->pp_prev = NULL;
+}
+
+static struct PageInfo *split_page(struct PageInfo *pp, uint8_t order)
+{
+	assert(pp->pp_order >= order);
+	while (pp->pp_order > order) {
+		struct PageInfo *buddy;
+
+		pp->pp_order--;
+		buddy = get_buddy_chunk(pp);
+		assert(buddy && buddy->pp_order == pp->pp_order);
+		insert_chunk(buddy);
+	}
+	return pp;
+}
+
+struct PageInfo *buddy_get_pages(uint8_t order)
+{
+	for (uint8_t o = order; o <= BUDDY_MAX_ORDER; o++) {
+		if (!pool.free_lists[o])
+			continue;
+		struct PageInfo *pp = pool.free_lists[o];
+
+		remove_chunk(pp);
+		return split_page(pp, order);
+	}
+	return NULL;
+}
+
+static struct PageInfo *merge_page(struct PageInfo *pp)
+{
+	struct PageInfo *buddy;
+
+	while ((buddy = get_buddy_chunk(pp))) {
+		if (buddy->pp_prev == NULL || buddy->pp_order < pp->pp_order)
+			break;
+		assert(buddy->pp_order == pp->pp_order);
+		remove_chunk(buddy);
+		pp = MIN(pp, buddy);
+		pp->pp_order++;
+	}
+	return pp;
+}
+
+void buddy_free_pages(struct PageInfo *pp)
+{
+	insert_chunk(merge_page(pp));
+}
+
 //
 // Initialize page structure and memory free list.
 // After this is done, NEVER use boot_alloc again.  ONLY use the page
@@ -247,6 +343,12 @@ mem_init(void)
 void
 page_init(void)
 {
+	pool.start = (uintptr_t) KADDR(0);
+	pool.size = npages * PGSIZE;
+	pool.pages = boot_alloc(sizeof(struct PageInfo) * npages);
+	memset(pool.pages, 0, sizeof(struct PageInfo) * npages);
+	memset(pool.free_lists, 0, sizeof(pool.free_lists));
+
 	// The example code here marks all physical pages as free.
 	// However this is not truly the case.  What memory is free?
 	//  1) Mark physical page 0 as in use.
@@ -264,11 +366,11 @@ page_init(void)
 	// Change the code to reflect this.
 	// NB: DO NOT actually touch the physical memory corresponding to
 	// free pages!
-	size_t i;
-	for (i = 0; i < npages; i++) {
-		pages[i].pp_ref = 0;
-		pages[i].pp_link = page_free_list;
-		page_free_list = &pages[i];
+	for (size_t i = 1; i < npages_basemem; i++) {
+		buddy_free_pages(&pool.pages[i]);
+	}
+	for (size_t i = PGNUM(PADDR(boot_alloc(0))); i < npages; i++) {
+		buddy_free_pages(&pool.pages[i]);
 	}
 }
 
@@ -288,7 +390,13 @@ struct PageInfo *
 page_alloc(int alloc_flags)
 {
 	// Fill this function in
-	return 0;
+	struct PageInfo *pp;
+
+	if (!(pp = buddy_get_pages(0)))
+		return NULL;
+	if (alloc_flags & ALLOC_ZERO)
+		memset(page2kva(pp), 0, PGSIZE);
+	return pp;
 }
 
 //
@@ -301,6 +409,8 @@ page_free(struct PageInfo *pp)
 	// Fill this function in
 	// Hint: You may want to panic if pp->pp_ref is nonzero or
 	// pp->pp_link is not NULL.
+	assert(pp->pp_ref == 0);
+	buddy_free_pages(pp);
 }
 
 //
@@ -337,10 +447,25 @@ page_decref(struct PageInfo* pp)
 // table and page directory entries.
 //
 pte_t *
-pgdir_walk(pde_t *pgdir, const void *va, int create)
+pgdir_walk(pde_t *pgdir, const void *va, bool create)
 {
 	// Fill this function in
-	return NULL;
+	pde_t *pde = &pgdir[PDX(va)];
+	pte_t *pgtbl;
+
+	// Walking on size-extended page is not supported.
+	assert((*pde & PTE_PS) == 0);
+
+	if (!(*pde & PTE_P)) {
+		struct PageInfo *pp;
+
+		if (!create || !(pp = page_alloc(ALLOC_ZERO)))
+			return NULL;
+		pp->pp_ref++;
+		*pde = page2pa(pp) | PTE_U | PTE_W | PTE_P;
+	}
+	pgtbl = KADDR(PTE_ADDR(*pde));
+	return &pgtbl[PTX(va)];
 }
 
 //
@@ -358,6 +483,25 @@ static void
 boot_map_region(pde_t *pgdir, uintptr_t va, size_t size, physaddr_t pa, int perm)
 {
 	// Fill this function in
+	assert(va >= UTOP);
+
+	if (perm & PTE_PS) {
+		for ( ; size > 0; size -= PTSIZE) {
+			pgdir[PDX(va)] = pa | perm | PTE_P;
+			va += PTSIZE;
+			pa += PTSIZE;
+		}
+		return;
+	}
+
+	for ( ; size > 0; size -= PGSIZE) {
+		pte_t *pte = pgdir_walk(pgdir, (void *) va, true);
+
+		assert(pte != NULL);
+		*pte = pa | perm | PTE_P;
+		va += PGSIZE;
+		pa += PGSIZE;
+	}
 }
 
 //
@@ -389,6 +533,15 @@ int
 page_insert(pde_t *pgdir, struct PageInfo *pp, void *va, int perm)
 {
 	// Fill this function in
+	pte_t *pte = pgdir_walk(pgdir, va, true);
+
+	assert(pp->pp_order == 0);
+	if (!pte)
+		return -E_NO_MEM;
+	pp->pp_ref++;
+	if (*pte & PTE_P)
+		page_remove(pgdir, va);
+	*pte = page2pa(pp) | perm | PTE_P;
 	return 0;
 }
 
@@ -407,7 +560,16 @@ struct PageInfo *
 page_lookup(pde_t *pgdir, void *va, pte_t **pte_store)
 {
 	// Fill this function in
-	return NULL;
+	pte_t *pte = pgdir_walk(pgdir, va, false);
+	struct PageInfo *pp;
+
+	if (!pte || !(*pte & PTE_P))
+		return NULL;
+	pp = pa2page(PTE_ADDR(*pte));
+	assert(pp->pp_order == 0);
+	if (pte_store)
+		*pte_store = pte;
+	return pp;
 }
 
 //
@@ -429,6 +591,14 @@ void
 page_remove(pde_t *pgdir, void *va)
 {
 	// Fill this function in
+	struct PageInfo *pp;
+	pte_t *pte;
+
+	if (!(pp = page_lookup(pgdir, va, &pte)))
+		return;
+	page_decref(pp);
+	*pte = 0;
+	tlb_invalidate(pgdir, va);
 }
 
 //
@@ -494,6 +664,125 @@ user_mem_assert(struct Env *env, const void *va, size_t len, int perm)
 // --------------------------------------------------------------
 
 //
+// Check that the buddy system works well
+//
+
+static size_t buddy_free_memory_size(void)
+{
+	size_t free_memory = 0;
+	struct PageInfo *pp;
+
+	for (uint8_t o = 0; o <= BUDDY_MAX_ORDER; o++)
+		for (pp = pool.free_lists[o]; pp; pp = pp->pp_next)
+			free_memory += PGSIZE << o;
+	return free_memory;
+}
+
+__attribute__((unused))
+static void buddy_print_lists(void)
+{
+	struct PageInfo *pp;
+
+	for (uint8_t o = 0; o <= BUDDY_MAX_ORDER; o++) {
+		cprintf("order: %d\n", o);
+		for (pp = pool.free_lists[o]; pp; pp = pp->pp_next) {
+			cprintf("  %x:", page2pa(pp));
+			if (pp->pp_prev == &pool.free_lists[o])
+				cprintf(" (head %d)\n", o);
+			else
+				cprintf(" (page %x)\n",
+					page2pa(container_of(pp->pp_prev,
+							     struct PageInfo,
+							     pp_next)));
+		}
+	}
+	cprintf("\n");
+}
+
+static void alloc_pages_of_order(uint8_t order)
+{
+	while (buddy_get_pages(order));
+}
+
+static void free_pages_of_order(uint8_t order)
+{
+	struct PageInfo *pages = pool.pages;
+	struct PageInfo *pp;
+
+	for (pp = &pages[1]; pp < &pages[npages]; pp += 1 << pp->pp_order) {
+		if (pp >= &pages[npages_basemem] &&
+		    pp < &pages[PGNUM(PADDR(boot_alloc(0)))])
+			continue;
+		if (pp->pp_order != order || pp->pp_prev != NULL)
+			continue;
+		buddy_free_pages(pp);
+	}
+}
+
+static void
+check_buddy(void)
+{
+	size_t upper_page_idx = PGNUM(PADDR(boot_alloc(0)));
+	size_t total, remaining, remaining2;
+
+	total = buddy_free_memory_size();
+
+	// Allocate all memory, as order 0 chunks.
+	alloc_pages_of_order(0);
+	assert(buddy_free_memory_size() == 0);
+	// Free all and check.
+	free_pages_of_order(0);
+	assert(buddy_free_memory_size() == total);
+
+	// Allocation of order 3 after exhausted allocation of order 2
+	// will always fail.
+	while (buddy_get_pages(2));
+	assert(!buddy_get_pages(3));
+	free_pages_of_order(2);
+	assert(buddy_free_memory_size() == total);
+
+	// Allocate all memory, as order {8, 3, 0} chunks.
+	while (buddy_get_pages(8));
+	remaining = buddy_free_memory_size();
+	while (buddy_get_pages(3));
+	remaining2 = buddy_free_memory_size();
+	while (buddy_get_pages(0));
+	assert(buddy_free_memory_size() == 0);
+	// Free all and check.
+	free_pages_of_order(3);
+	assert(buddy_free_memory_size() == remaining - remaining2);
+	free_pages_of_order(0);
+	assert(buddy_free_memory_size() == remaining);
+	free_pages_of_order(8);
+	assert(buddy_free_memory_size() == total);
+
+	// Allocate all, and free half by half.
+	struct PageInfo *pages = pool.pages;
+	struct PageInfo *pp;
+
+	while (buddy_get_pages(0));
+	for (pp = &pages[1]; pp < &pages[npages]; pp += 2) {
+		if (pp >= &pages[npages_basemem] &&
+		    pp < &pages[PGNUM(PADDR(boot_alloc(0)))])
+			continue;
+		assert(pp->pp_prev == NULL);
+		buddy_free_pages(pp);
+	}
+	for (uint8_t o = 1; o <= BUDDY_MAX_ORDER; o++)
+		assert(!buddy_get_pages(o));
+	for (pp = &pages[2]; pp < &pages[npages]; pp += 2) {
+		if (pp >= &pages[npages_basemem] &&
+		    pp < &pages[PGNUM(PADDR(boot_alloc(0)))])
+			continue;
+		assert(pp->pp_prev == NULL);
+		buddy_free_pages(pp);
+	}
+	assert(buddy_free_memory_size() == total);
+
+	cprintf("check_buddy() succeeded!\n");
+}
+
+//
 // Check that the pages on the page_free_list are reasonable.
 //
 static void
@@ -502,47 +791,29 @@ check_page_free_list(bool only_low_memory)
 	struct PageInfo *pp;
 	unsigned pdx_limit = only_low_memory ? 1 : NPDENTRIES;
 	int nfree_basemem = 0, nfree_extmem = 0;
-	char *first_free_page;
-
-	if (!page_free_list)
-		panic("'page_free_list' is a null pointer!");
-
-	if (only_low_memory) {
-		// Move pages with lower addresses first in the free
-		// list, since entry_pgdir does not map all pages.
-		struct PageInfo *pp1, *pp2;
-		struct PageInfo **tp[2] = { &pp1, &pp2 };
-		for (pp = page_free_list; pp; pp = pp->pp_link) {
-			int pagetype = PDX(page2pa(pp)) >= pdx_limit;
-			*tp[pagetype] = pp;
-			tp[pagetype] = &pp->pp_link;
-		}
-		*tp[1] = 0;
-		*tp[0] = pp2;
-		page_free_list = pp1;
-	}
+	void *first_free_page = boot_alloc(0);
 
 	// if there's a page that shouldn't be on the free list,
 	// try to make sure it eventually causes trouble.
-	for (pp = page_free_list; pp; pp = pp->pp_link)
-		if (PDX(page2pa(pp)) < pdx_limit)
-			memset(page2kva(pp), 0x97, 128);
+	for (pp = pool.pages; pp < &pool.pages[npages]; pp++)
+		// KERNBASE + PTSIZE must be a boundary of some chunk.
+		if (pp->pp_prev != NULL && PDX(page2pa(pp)) < pdx_limit)
+			memset(page2kva(pp), 0x97, PGSIZE << pp->pp_order);
 
-	first_free_page = (char *) boot_alloc(0);
-	for (pp = page_free_list; pp; pp = pp->pp_link) {
-		// check that we didn't corrupt the free list itself
-		assert(pp >= pages);
-		assert(pp < pages + npages);
-		assert(((char *) pp - (char *) pages) % sizeof(*pp) == 0);
-
+	for (pp = pool.pages; pp < &pool.pages[npages]; pp++) {
+		if (pp->pp_prev == NULL)
+			continue;
 		// check a few pages that shouldn't be on the free list
-		assert(page2pa(pp) != 0);
-		assert(page2pa(pp) != IOPHYSMEM);
-		assert(page2pa(pp) != EXTPHYSMEM - PGSIZE);
-		assert(page2pa(pp) != EXTPHYSMEM);
-		assert(page2pa(pp) < EXTPHYSMEM || (char *) page2kva(pp) >= first_free_page);
+		physaddr_t start = page2pa(pp);
+		physaddr_t end = start + (PGSIZE << pp->pp_order);
 
-		if (page2pa(pp) < EXTPHYSMEM)
+		assert(!(0 >= start && 0 < end));
+		assert(!(IOPHYSMEM >= start && IOPHYSMEM < end));
+		assert(!(EXTPHYSMEM - PGSIZE >= start && EXTPHYSMEM - PGSIZE < end));
+		assert(!(EXTPHYSMEM >= start && EXTPHYSMEM < end));
+		assert(end < EXTPHYSMEM || KADDR(start) >= first_free_page);
+
+		if (end < EXTPHYSMEM)
 			++nfree_basemem;
 		else
 			++nfree_extmem;
@@ -554,6 +825,35 @@ check_page_free_list(bool only_low_memory)
 	cprintf("check_page_free_list() succeeded!\n");
 }
 
+static struct PageInfo *_free_lists[BUDDY_MAX_ORDER + 1];
+_Static_assert(sizeof(_free_lists) == sizeof(pool.free_lists));
+
+static void steal_buddy_memory(void)
+{
+	memcpy(_free_lists, pool.free_lists, sizeof(_free_lists));
+	memset(pool.free_lists, 0, sizeof(_free_lists));
+	for (uint8_t o = 0; o <= BUDDY_MAX_ORDER; o++) {
+		struct PageInfo *pp;
+
+		for (pp = _free_lists[o]; pp; pp = pp->pp_next)
+			pp->pp_prev = NULL;
+	}
+}
+
+static void restore_buddy_memory(void)
+{
+	memcpy(pool.free_lists, _free_lists, sizeof(_free_lists));
+	for (uint8_t o = 0; o <= BUDDY_MAX_ORDER; o++) {
+		struct PageInfo **pp_prev = &pool.free_lists[o];
+		struct PageInfo *pp;
+
+		for (pp = pool.free_lists[o]; pp; pp = pp->pp_next) {
+			pp->pp_prev = pp_prev;
+			pp_prev = &pp->pp_next;
+		}
+	}
+}
+
 //
 // Check the physical page allocator (page_alloc(), page_free(),
 // and page_init()).
@@ -563,16 +863,16 @@ check_page_alloc(void)
 {
 	struct PageInfo *pp, *pp0, *pp1, *pp2;
 	int nfree;
-	struct PageInfo *fl;
 	char *c;
 	int i;
 
-	if (!pages)
+	if (!pool.pages)
 		panic("'pages' is a null pointer!");
 
 	// check number of free pages
-	for (pp = page_free_list, nfree = 0; pp; pp = pp->pp_link)
-		++nfree;
+	for (pp = pool.pages, nfree = 0; pp < &pool.pages[npages]; pp++)
+		if (pp->pp_prev != NULL)
+			++nfree;
 
 	// should be able to allocate three pages
 	pp0 = pp1 = pp2 = 0;
@@ -588,8 +888,7 @@ check_page_alloc(void)
 	assert(page2pa(pp2) < npages*PGSIZE);
 
 	// temporarily steal the rest of the free pages
-	fl = page_free_list;
-	page_free_list = 0;
+	steal_buddy_memory();
 
 	// should be no free memory
 	assert(!page_alloc(0));
@@ -617,7 +916,7 @@ check_page_alloc(void)
 		assert(c[i] == 0);
 
 	// give free list back
-	page_free_list = fl;
+	restore_buddy_memory();
 
 	// free the pages we took
 	page_free(pp0);
@@ -625,8 +924,9 @@ check_page_alloc(void)
 	page_free(pp2);
 
 	// number of free pages should be the same
-	for (pp = page_free_list; pp; pp = pp->pp_link)
-		--nfree;
+	for (pp = pool.pages; pp < &pool.pages[npages]; pp++)
+		if (pp->pp_prev != NULL)
+			--nfree;
 	assert(nfree == 0);
 
 	cprintf("check_page_alloc() succeeded!\n");
@@ -651,7 +951,7 @@ check_kern_pgdir(void)
 	// check pages array
 	n = ROUNDUP(npages*sizeof(struct PageInfo), PGSIZE);
 	for (i = 0; i < n; i += PGSIZE)
-		assert(check_va2pa(pgdir, UPAGES + i) == PADDR(pages) + i);
+		assert(check_va2pa(pgdir, UPAGES + i) == PADDR(pool.pages) + i);
 
 	// check envs array (new test for lab 3)
 	n = ROUNDUP(NENV*sizeof(struct Env), PGSIZE);
@@ -701,6 +1001,8 @@ check_va2pa(pde_t *pgdir, uintptr_t va)
 	pgdir = &pgdir[PDX(va)];
 	if (!(*pgdir & PTE_P))
 		return ~0;
+	if (*pgdir & PTE_PS)
+		return PTE_ADDR(*pgdir) | (PTX(va) << PGSHIFT);
 	p = (pte_t*) KADDR(PTE_ADDR(*pgdir));
 	if (!(p[PTX(va)] & PTE_P))
 		return ~0;
@@ -713,7 +1015,6 @@ static void
 check_page(void)
 {
 	struct PageInfo *pp, *pp0, *pp1, *pp2;
-	struct PageInfo *fl;
 	pte_t *ptep, *ptep1;
 	void *va;
 	int i;
@@ -730,8 +1031,7 @@ check_page(void)
 	assert(pp2 && pp2 != pp1 && pp2 != pp0);
 
 	// temporarily steal the rest of the free pages
-	fl = page_free_list;
-	page_free_list = 0;
+	steal_buddy_memory();
 
 	// should be no free memory
 	assert(!page_alloc(0));
@@ -810,7 +1110,7 @@ check_page(void)
 	// test re-inserting pp1 at PGSIZE
 	assert(page_insert(kern_pgdir, pp1, (void*) PGSIZE, 0) == 0);
 	assert(pp1->pp_ref);
-	assert(pp1->pp_link == NULL);
+	assert(pp1->pp_prev == NULL);
 
 	// unmapping pp1 at PGSIZE should free it
 	page_remove(kern_pgdir, (void*) PGSIZE);
@@ -851,7 +1151,7 @@ check_page(void)
 	pp0->pp_ref = 0;
 
 	// give free list back
-	page_free_list = fl;
+	restore_buddy_memory();
 
 	// free the pages we took
 	page_free(pp0);

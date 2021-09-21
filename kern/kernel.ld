@@ -51,6 +51,8 @@ SECTIONS
 		PROVIDE(edata = .);
 		*(.bss)
 		PROVIDE(end = .);
+                /* This is because the ELF loader in the bootloader
+                 * implements .bss segment by plain LOADING.  */
 		BYTE(0)
 	}
 
