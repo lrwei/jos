@@ -105,3 +105,18 @@ _alltraps:
 	# So that return address still belongs to `kern/trapentry.S`.
 spin:	jmp	spin
 
+.global sysenter_handler
+.type sysenter_handler, @function
+sysenter_handler:
+	pushl	%edi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edx
+	pushl	%eax
+	call	syscall
+
+	# Both %esi and %ebp are callee-saved register.
+	# SYSEXIT will load %eip and %esp from %edx and %ecx respectively.
+	movl	%esi, %edx
+	movl	%ebp, %ecx
+	sysexit
