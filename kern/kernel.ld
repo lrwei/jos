@@ -49,10 +49,11 @@ SECTIONS
 
 	.bss : {
 		PROVIDE(edata = .);
-		*(.dynbss)
-		*(.bss .bss.*)
-		*(COMMON)
+		*(.bss)
 		PROVIDE(end = .);
+                /* This is because the ELF loader in the bootloader
+                 * implements .bss segment by plain LOADING.  */
+		BYTE(0)
 	}
 
 
