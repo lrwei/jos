@@ -102,8 +102,8 @@ boot_aps(void)
 void
 mp_main(void)
 {
-	// Enable page-size-extension for APs.
-	lcr4(rcr4() | CR4_PSE);
+	// Assert that page-size-extension has been enabled for APs.
+	assert(rcr4() & CR4_PSE);
 
 	// We are in high EIP now, safe to switch to kern_pgdir
 	lcr3(PADDR(kern_pgdir));

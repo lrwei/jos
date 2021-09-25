@@ -84,7 +84,7 @@ static void check_page_installed_pgdir(void);
 // This function may ONLY be used during initialization,
 // before the page_free_list list has been set up.
 // Note that when this function is called, we are still using entry_pgdir,
-// which only maps the first 4MB of physical memory.
+// which only maps the first 8MB of physical memory.
 static void *
 boot_alloc(uint32_t n)
 {
@@ -106,7 +106,7 @@ boot_alloc(uint32_t n)
 	// to a multiple of PGSIZE.
 	//
 	// LAB 2: Your code here.
-	assert(n <= PTSIZE - PADDR(nextfree));
+	assert(n <= 2 * PTSIZE - PADDR(nextfree));
 	result = nextfree;
 	nextfree += ROUNDUP(n, PGSIZE);
 	return result;
@@ -227,8 +227,8 @@ mem_init(void)
 	// Check that the initial page directory has been set up correctly.
 	check_kern_pgdir();
 
-	// Enable page-size-extension by setting the corresponding bit in cr4.
-	lcr4(rcr4() | CR4_PSE);
+	// Assert that page-size-extension has been enabled for BSP.
+	assert(rcr4() & CR4_PSE);
 
 	// Switch from the minimal entry page directory to the full kern_pgdir
 	// page table we just created.	Our instruction pointer should be
@@ -902,7 +902,7 @@ static void
 check_page_free_list(bool only_low_memory)
 {
 	struct PageInfo *pp;
-	unsigned pdx_limit = only_low_memory ? 1 : NPDENTRIES;
+	unsigned pdx_limit = only_low_memory ? 2 : NPDENTRIES;
 	int nfree_basemem = 0, nfree_extmem = 0;
 	void *first_free_page = boot_alloc(0);
 	const physaddr_t reserved[] = {

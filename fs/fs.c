@@ -3,6 +3,9 @@
 
 #include "fs.h"
 
+struct Super *super;
+uint32_t *bitmap;
+
 // --------------------------------------------------------------
 // Super block
 // --------------------------------------------------------------
@@ -112,7 +115,7 @@ fs_init(void)
 	// Set "bitmap" to the beginning of the first bitmap block.
 	bitmap = diskaddr(2);
 	check_bitmap();
-	
+
 }
 
 // Find the disk block number slot for the 'filebno'th block in file 'f'.
