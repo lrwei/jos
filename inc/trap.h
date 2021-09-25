@@ -29,7 +29,7 @@
 // processor defined exceptions or interrupt vectors.
 #define T_SYSCALL   48		// system call
 #define T_DEFAULT   500		// catchall
-#define GAPSIZE     ((T_SYSCALL - T_NUMBER) * 4)
+#define GAPSIZE     ((IRQ_OFFSET - T_NUMBER) * 4)
 
 #define IRQ_OFFSET	32	// IRQ 0 corresponds to int IRQ_OFFSET
 

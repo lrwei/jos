@@ -272,7 +272,13 @@ mem_init_mp(void)
 	//     Permissions: kernel RW, user NONE
 	//
 	// LAB 4: Your code here:
+	uintptr_t kstacktop = KSTACKTOP;
 
+	for (int i = 0; i < NCPU; i++) {
+		boot_map_region(kern_pgdir, kstacktop - KSTKSIZE, KSTKSIZE,
+				PADDR(percpu_kstacks[i]), PTE_W);
+		kstacktop -= KSTKSIZE + KSTKGAP;
+	}
 }
 
 // --------------------------------------------------------------
@@ -368,6 +374,14 @@ void buddy_free_pages(struct PageInfo *pp)
 	insert_chunk(merge_page(pp));
 }
 
+static inline bool page_is_reserved(struct PageInfo *pp)
+{
+	size_t off = pp - pool.pages;
+
+	return off == 0 || off == PGNUM(MPENTRY_PADDR) ||
+	       (off >= npages_basemem && off < PGNUM(PADDR(boot_alloc(0))));
+}
+
 //
 // Initialize page structure and memory free list.
 // After this is done, NEVER use boot_alloc again.  ONLY use the page
@@ -404,13 +418,13 @@ page_init(void)
 	// Change the code to reflect this.
 	// NB: DO NOT actually touch the physical memory corresponding to
 	// free pages!
-	for (size_t i = 1; i < npages_basemem; i++) {
-		buddy_free_pages(&pool.pages[i]);
-	}
-	for (size_t i = PGNUM(PADDR(boot_alloc(0))); i < npages; i++) {
+	for (size_t i = 0; i < npages; i++) {
+		if (page_is_reserved(&pool.pages[i]))
+			continue;
 		buddy_free_pages(&pool.pages[i]);
 	}
 }
+
 
 //
 // Allocates a physical page.  If (alloc_flags & ALLOC_ZERO), fills the entire
@@ -686,7 +700,13 @@ mmio_map_region(physaddr_t pa, size_t size)
 	// Hint: The staff solution uses boot_map_region.
 	//
 	// Your code here:
-	panic("mmio_map_region not implemented");
+	uintptr_t result = base;
+
+	base += ROUNDUP(size + PGOFF(pa), PGSIZE);
+	pa = ROUNDDOWN(pa, PGSIZE);
+	boot_map_region(kern_pgdir, result, base - result, pa,
+			PTE_PCD | PTE_PWT | PTE_W);
+	return (void *) result;
 }
 
 static uintptr_t user_mem_check_addr;
@@ -804,8 +824,7 @@ static void free_pages_of_order(uint8_t order)
 	struct PageInfo *pp;
 
 	for (pp = &pages[1]; pp < &pages[npages]; pp += 1 << pp->pp_order) {
-		if (pp >= &pages[npages_basemem] &&
-		    pp < &pages[PGNUM(PADDR(boot_alloc(0)))])
+		if (page_is_reserved(pp))
 			continue;
 		if (pp->pp_order != order || pp->pp_prev != NULL)
 			continue;
@@ -856,8 +875,7 @@ check_buddy(void)
 
 	while (buddy_get_pages(0));
 	for (pp = &pages[1]; pp < &pages[npages]; pp += 2) {
-		if (pp >= &pages[npages_basemem] &&
-		    pp < &pages[PGNUM(PADDR(boot_alloc(0)))])
+		if (page_is_reserved(pp))
 			continue;
 		assert(pp->pp_prev == NULL);
 		buddy_free_pages(pp);
@@ -865,8 +883,7 @@ check_buddy(void)
 	for (uint8_t o = 1; o <= BUDDY_MAX_ORDER; o++)
 		assert(!buddy_get_pages(o));
 	for (pp = &pages[2]; pp < &pages[npages]; pp += 2) {
-		if (pp >= &pages[npages_basemem] &&
-		    pp < &pages[PGNUM(PADDR(boot_alloc(0)))])
+		if (page_is_reserved(pp))
 			continue;
 		assert(pp->pp_prev == NULL);
 		buddy_free_pages(pp);
@@ -1076,7 +1093,6 @@ check_kern_pgdir(void)
 		case PDX(KSTACKTOP-1):
 		case PDX(UPAGES):
 		case PDX(UENVS):
-		case PDX(MMIOBASE):
 			assert(pgdir[i] & PTE_P);
 			break;
 		default:
@@ -1284,6 +1300,8 @@ check_page(void)
 	*pgdir_walk(kern_pgdir, (void*) mm1, 0) = 0;
 	*pgdir_walk(kern_pgdir, (void*) mm1 + PGSIZE, 0) = 0;
 	*pgdir_walk(kern_pgdir, (void*) mm2, 0) = 0;
+	page_decref(pa2page(PTE_ADDR(kern_pgdir[PDX(MMIOBASE)])));
+	kern_pgdir[PDX(MMIOBASE)] = 0;
 
 	cprintf("check_page() succeeded!\n");
 }

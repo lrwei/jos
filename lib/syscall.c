@@ -95,7 +95,7 @@ sys_yield(void)
 int
 sys_page_alloc(envid_t envid, void *va, int perm)
 {
-	return syscall(SYS_page_alloc, 1, envid, (uint32_t) va, perm, 0, 0);
+	return syscall2(SYS_page_alloc, 1, envid, (uint32_t) va, perm, 0);
 }
 
 int
@@ -107,7 +107,7 @@ sys_page_map(envid_t srcenv, void *srcva, envid_t dstenv, void *dstva, int perm)
 int
 sys_page_unmap(envid_t envid, void *va)
 {
-	return syscall(SYS_page_unmap, 1, envid, (uint32_t) va, 0, 0, 0);
+	return syscall2(SYS_page_unmap, 1, envid, (uint32_t) va, 0, 0);
 }
 
 // sys_exofork is inlined in lib.h
@@ -115,19 +115,19 @@ sys_page_unmap(envid_t envid, void *va)
 int
 sys_env_set_status(envid_t envid, int status)
 {
-	return syscall(SYS_env_set_status, 1, envid, status, 0, 0, 0);
+	return syscall2(SYS_env_set_status, 1, envid, status, 0, 0);
 }
 
 int
 sys_env_set_pgfault_upcall(envid_t envid, void *upcall)
 {
-	return syscall(SYS_env_set_pgfault_upcall, 1, envid, (uint32_t) upcall, 0, 0, 0);
+	return syscall2(SYS_env_set_pgfault_upcall, 1, envid, (uint32_t) upcall, 0, 0);
 }
 
 int
 sys_ipc_try_send(envid_t envid, uint32_t value, void *srcva, int perm)
 {
-	return syscall(SYS_ipc_try_send, 0, envid, value, (uint32_t) srcva, perm, 0);
+	return syscall2(SYS_ipc_try_send, 0, envid, value, (uint32_t) srcva, perm);
 }
 
 int

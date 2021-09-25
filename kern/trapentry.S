@@ -80,6 +80,22 @@ TRAPHANDLER_NOEC(_vector_17, T_ALIGN)
 
 .space	GAPSIZE
 
+TRAPHANDLER_NOEC(_vector_32, IRQ_OFFSET + IRQ_TIMER)
+TRAPHANDLER_NOEC(_vector_33, IRQ_OFFSET + IRQ_KBD)
+TRAPHANDLER_NOEC(_vector_34, IRQ_OFFSET + 2)
+TRAPHANDLER_NOEC(_vector_35, IRQ_OFFSET + 3)
+TRAPHANDLER_NOEC(_vector_36, IRQ_OFFSET + IRQ_SERIAL)
+TRAPHANDLER_NOEC(_vector_37, IRQ_OFFSET + 5)
+TRAPHANDLER_NOEC(_vector_38, IRQ_OFFSET + 6)
+TRAPHANDLER_NOEC(_vector_39, IRQ_OFFSET + IRQ_SPURIOUS)
+TRAPHANDLER_NOEC(_vector_40, IRQ_OFFSET + 8)
+TRAPHANDLER_NOEC(_vector_41, IRQ_OFFSET + 9)
+TRAPHANDLER_NOEC(_vector_42, IRQ_OFFSET + 10)
+TRAPHANDLER_NOEC(_vector_43, IRQ_OFFSET + 11)
+TRAPHANDLER_NOEC(_vector_44, IRQ_OFFSET + 12)
+TRAPHANDLER_NOEC(_vector_45, IRQ_OFFSET + 13)
+TRAPHANDLER_NOEC(_vector_46, IRQ_OFFSET + IRQ_IDE)
+TRAPHANDLER_NOEC(_vector_47, IRQ_OFFSET + 15)
 TRAPHANDLER_NOEC(_vector_48, T_SYSCALL)
 
 /*
@@ -114,10 +130,16 @@ sysenter_handler:
 	pushl	%ecx
 	pushl	%edx
 	pushl	%eax
-	call	syscall
+	call	syscall__lock_kernel
 
 	# Both %esi and %ebp are callee-saved register.
 	# SYSEXIT will load %eip and %esp from %edx and %ecx respectively.
 	movl	%esi, %edx
 	movl	%ebp, %ecx
+
+        # SYSEXIT does not restore eflags like IRET, do it manually instead.
+        # [Software Developer's Manual - Volume 2]
+        # If IF = 0, maskable hardware interrupts remain inhibited on the
+        # instruction boundary following an execution of STI.
+        sti
 	sysexit
