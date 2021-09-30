@@ -22,35 +22,124 @@
  * where NAME is the argument passed to TRAPHANDLER.
  */
 #define TRAPHANDLER(name, num)						\
+.text;									\
 	.globl name;		/* define global symbol for 'name' */	\
 	.type name, @function;	/* symbol type is function */		\
 	.align 2;		/* align function definition */		\
 	name:			/* function starts here */		\
 	pushl $(num);							\
-	jmp _alltraps
+	jmp _alltraps;							\
+.data;									\
+	.long name
 
 /* Use TRAPHANDLER_NOEC for traps where the CPU doesn't push an error code.
  * It pushes a 0 in place of the error code, so the trap frame has the same
  * format in either case.
  */
 #define TRAPHANDLER_NOEC(name, num)					\
+.text;									\
 	.globl name;							\
 	.type name, @function;						\
 	.align 2;							\
 	name:								\
 	pushl $0;							\
 	pushl $(num);							\
-	jmp _alltraps
-
-.text
+	jmp _alltraps;							\
+.data;									\
+	.long name
 
 /*
  * Lab 3: Your code here for generating entry points for the different traps.
  */
 
+.data
+.align 2
+.global _vectors
+_vectors:
 
+TRAPHANDLER_NOEC(_vector_0, T_DIVIDE)
+TRAPHANDLER_NOEC(_vector_1, T_DEBUG)
+TRAPHANDLER_NOEC(_vector_2, T_NMI)
+TRAPHANDLER_NOEC(_vector_3, T_BRKPT)
+TRAPHANDLER_NOEC(_vector_4, T_OFLOW)
+TRAPHANDLER_NOEC(_vector_5, T_BOUND)
+TRAPHANDLER_NOEC(_vector_6, T_ILLOP)
+TRAPHANDLER_NOEC(_vector_7, T_DEVICE)
+     TRAPHANDLER(_vector_8, T_DBLFLT)
+TRAPHANDLER_NOEC(_vector_9, 9 /* T_COPROC */)
+     TRAPHANDLER(_vector_10, T_TSS)
+     TRAPHANDLER(_vector_11, T_SEGNP)
+     TRAPHANDLER(_vector_12, T_STACK)
+     TRAPHANDLER(_vector_13, T_GPFLT)
+     TRAPHANDLER(_vector_14, T_PGFLT)
+TRAPHANDLER_NOEC(_vector_15, 15 /* T_RES */)
+TRAPHANDLER_NOEC(_vector_16, T_FPERR)
+TRAPHANDLER_NOEC(_vector_17, T_ALIGN)
+     TRAPHANDLER(_vector_18, T_MCHK)
+     TRAPHANDLER(_vector_19, T_SIMDERR)
+
+.space	GAPSIZE
+
+TRAPHANDLER_NOEC(_vector_32, IRQ_OFFSET + IRQ_TIMER)
+TRAPHANDLER_NOEC(_vector_33, IRQ_OFFSET + IRQ_KBD)
+TRAPHANDLER_NOEC(_vector_34, IRQ_OFFSET + 2)
+TRAPHANDLER_NOEC(_vector_35, IRQ_OFFSET + 3)
+TRAPHANDLER_NOEC(_vector_36, IRQ_OFFSET + IRQ_SERIAL)
+TRAPHANDLER_NOEC(_vector_37, IRQ_OFFSET + 5)
+TRAPHANDLER_NOEC(_vector_38, IRQ_OFFSET + 6)
+TRAPHANDLER_NOEC(_vector_39, IRQ_OFFSET + IRQ_SPURIOUS)
+TRAPHANDLER_NOEC(_vector_40, IRQ_OFFSET + 8)
+TRAPHANDLER_NOEC(_vector_41, IRQ_OFFSET + 9)
+TRAPHANDLER_NOEC(_vector_42, IRQ_OFFSET + 10)
+TRAPHANDLER_NOEC(_vector_43, IRQ_OFFSET + 11)
+TRAPHANDLER_NOEC(_vector_44, IRQ_OFFSET + 12)
+TRAPHANDLER_NOEC(_vector_45, IRQ_OFFSET + 13)
+TRAPHANDLER_NOEC(_vector_46, IRQ_OFFSET + IRQ_IDE)
+TRAPHANDLER_NOEC(_vector_47, IRQ_OFFSET + 15)
+TRAPHANDLER_NOEC(_vector_48, T_SYSCALL)
 
 /*
  * Lab 3: Your code here for _alltraps
  */
 
+.text
+_alltraps:
+	# Construct trapframe on kernel stack. Use *pushl* for
+	# both %ds, %es to fit data layout of struct Trapframe.
+	pushl	%ds
+	pushl	%es
+	pushal
+
+	# Set registers not automatically loaded from IDT.
+	movw	$GD_KD, %ax
+	movw	%ax, %ds
+	movw	%ax, %es
+
+	# Pass parameter and call trap().
+	pushl	%esp
+	call	trap
+
+	# So that return address still belongs to `kern/trapentry.S`.
+spin:	jmp	spin
+
+.global sysenter_handler
+.type sysenter_handler, @function
+sysenter_handler:
+	pushl	%edi
+	pushl	%ebx
+	pushl	%ecx
+	pushl	%edx
+	pushl	%eax
+	call	syscall__lock_kernel
+
+	# Both %esi and %ebp are callee-saved register.
+	# SYSEXIT will load %eip and %esp from %edx and %ecx respectively.
+	movl	%esi, %edx
+	movl	%ebp, %ecx
+
+        # SYSEXIT does not restore eflags like IRET, do it manually instead.
+        # [Software Developer's Manual - Volume 2]
+        # If IF = 0, maskable hardware interrupts remain inhibited on the
+        # instruction boundary following an execution of STI.
+        sti
+	sysexit

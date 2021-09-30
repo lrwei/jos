@@ -59,6 +59,10 @@ int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
 int	sys_ipc_recv(void *rcv_pg);
 
 // This must be inlined.  Exercise for reader: why?
+// Parent can copy memory of the stack to its child only after sys_exofork()
+// has finished, or, returned if it's not inlined into its caller, which in
+// turn trashes its own stack frame, while leaving ESP of the to-be-executed
+// child pointing to the trashed stack frame.
 static inline envid_t __attribute__((always_inline))
 sys_exofork(void)
 {
