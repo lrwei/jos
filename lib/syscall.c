@@ -121,7 +121,7 @@ sys_env_set_status(envid_t envid, int status)
 int
 sys_env_set_trapframe(envid_t envid, struct Trapframe *tf)
 {
-	return syscall(SYS_env_set_trapframe, 1, envid, (uint32_t) tf, 0, 0, 0);
+	return syscall2(SYS_env_set_trapframe, 1, envid, (uint32_t) tf, 0, 0);
 }
 
 int

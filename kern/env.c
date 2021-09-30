@@ -410,6 +410,13 @@ env_create(uint8_t *binary, enum EnvType type)
 
 	// If this is the file server (type == ENV_TYPE_FS) give it I/O privileges.
 	// LAB 5: Your code here.
+	// [Software Developer's Manual - Volume 1]
+	// I/O privilege level field - Indicates the I/O privilege level of the
+	// currently running program or task. The current privilege level (CPL)
+	// of the currently running program or task must be less than or equal
+	// to the I/O privilege level to access the I/O address space.
+	if (type == ENV_TYPE_FS)
+		e->env_tf.tf_eflags |= FL_IOPL_3;
 }
 
 //

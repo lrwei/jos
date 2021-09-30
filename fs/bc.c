@@ -48,6 +48,10 @@ bc_pgfault(struct UTrapframe *utf)
 	// the disk.
 	//
 	// LAB 5: you code here:
+	addr = ROUNDDOWN(addr, PGSIZE);
+	if ((r = sys_page_alloc(0, addr, PTE_U | PTE_W | PTE_P)) < 0)
+		panic("bc_pgfault: sys_page_alloc: %e", r);
+	ide_read(blockno * BLKSECTS, addr, BLKSECTS);
 
 	// Clear the dirty bit for the disk block page since we just read the
 	// block from disk
@@ -56,7 +60,7 @@ bc_pgfault(struct UTrapframe *utf)
 
 	// Check that the block we read was allocated. (exercise for
 	// the reader: why do we do this *after* reading the block
-	// in?)
+	// in?) -- The bitmap itself has to be faulted in first.
 	if (bitmap && block_is_free(blockno))
 		panic("reading free block %08x\n", blockno);
 }
@@ -77,7 +81,14 @@ flush_block(void *addr)
 		panic("flush_block of bad va %08x", addr);
 
 	// LAB 5: Your code here.
-	panic("flush_block not implemented");
+	int r;
+
+	addr = ROUNDDOWN(addr, PGSIZE);
+	if (!va_is_mapped(addr) || !va_is_dirty(addr))
+		return;
+	ide_write(blockno * BLKSECTS, addr, BLKSECTS);
+	if ((r = sys_page_map(0, addr, 0, addr, uvpt[PGNUM(addr)] & PTE_SYSCALL)) < 0)
+		panic("flush_block: sys_page_map: %e\n", r);
 }
 
 // Test that the block cache works, by smashing the superblock and
