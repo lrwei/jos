@@ -150,11 +150,6 @@ try_open:
 			return r;
 		}
 	}
-	if ((r = file_open(path, &f)) < 0) {
-		if (debug)
-			cprintf("file_open failed: %e", r);
-		return r;
-	}
 
 	// Save the file pointer
 	o->o_file = f;
@@ -214,7 +209,16 @@ serve_read(envid_t envid, union Fsipc *ipc)
 		cprintf("serve_read %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
 
 	// Lab 5: Your code here:
-	return 0;
+	struct OpenFile *o;
+	ssize_t r;
+
+	if ((r = openfile_lookup(envid, req->req_fileid, &o)) < 0)
+		return r;
+	r = file_read(o->o_file, ret->ret_buf, MIN(req->req_n, PGSIZE),
+		      o->o_fd->fd_offset);
+	if (r > 0)
+		o->o_fd->fd_offset += r;
+	return r;
 }
 
 
@@ -229,7 +233,15 @@ serve_write(envid_t envid, struct Fsreq_write *req)
 		cprintf("serve_write %08x %08x %08x\n", envid, req->req_fileid, req->req_n);
 
 	// LAB 5: Your code here.
-	panic("serve_write not implemented");
+	struct OpenFile *o;
+	ssize_t r;
+
+	if ((r = openfile_lookup(envid, req->req_fileid, &o)) < 0)
+		return r;
+	r = file_write(o->o_file, req->req_buf, req->req_n, o->o_fd->fd_offset);
+	if (r > 0)
+		o->o_fd->fd_offset += r;
+	return r;
 }
 
 // Stat ipc->stat.req_fileid.  Return the file's struct Stat to the

@@ -20,4 +20,9 @@ void print_trapframe(struct Trapframe *tf);
 void page_fault_handler(struct Trapframe *);
 void backtrace(struct Trapframe *);
 
+// Model specific registers used by SYSENTER and SYSEXIT
+#define IA32_SYSENTER_CS	0x174
+#define IA32_SYSENTER_ESP	0x175
+#define IA32_SYSENTER_EIP	0x176
+
 #endif /* JOS_KERN_TRAP_H */

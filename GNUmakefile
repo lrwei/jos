@@ -87,9 +87,9 @@ PERL	:= perl
 CFLAGS := $(CFLAGS) $(DEFS) $(LABDEFS) -O1 -fno-builtin -I$(TOP) -MD
 CFLAGS += -fno-omit-frame-pointer
 CFLAGS += -std=gnu99
-CFLAGS += -static
-CFLAGS += -fno-pie
+CFLAGS += -static -fno-pie
 CFLAGS += -Wall -Wno-format -Wno-unused -Werror -gstabs -m32
+CFLAGS += -Wno-error=address-of-packed-member
 # -fno-tree-ch prevented gcc from sometimes reordering read_ebp() before
 # mon_backtrace()'s function prologue on gcc version: (Debian 4.7.2-5) 4.7.2
 CFLAGS += -fno-tree-ch
@@ -157,7 +157,7 @@ PORT80	:= $(shell expr $(GDBPORT) + 2)
 QEMUOPTS = -drive file=$(OBJDIR)/kern/kernel.img,index=0,media=disk,format=raw -serial mon:stdio -gdb tcp::$(GDBPORT)
 QEMUOPTS += $(shell if $(QEMU) -nographic -help | grep -q '^-D '; then echo '-D qemu.log'; fi)
 IMAGES = $(OBJDIR)/kern/kernel.img
-QEMUOPTS += -smp $(CPUS)
+QEMUOPTS += -smp $(CPUS) -accel tcg,thread=multi
 QEMUOPTS += -drive file=$(OBJDIR)/fs/fs.img,index=1,media=disk,format=raw
 IMAGES += $(OBJDIR)/fs/fs.img
 QEMUOPTS += -net user -net nic,model=e1000 -redir tcp:$(PORT7)::7 \
@@ -203,7 +203,7 @@ print-gdbport:
 
 # For deleting the build
 clean:
-	rm -rf $(OBJDIR) .gdbinit jos.in qemu.log
+	rm -rf $(OBJDIR) .gdbinit jos.in qemu.log jos.out __pycache__
 
 realclean: clean
 	rm -rf lab$(LAB).tar.gz \

@@ -33,10 +33,10 @@
 .set PROT_MODE_CSEG, 0x8	# kernel code segment selector
 .set PROT_MODE_DSEG, 0x10	# kernel data segment selector
 
-.code16           
+.code16
 .globl mpentry_start
 mpentry_start:
-	cli            
+	cli
 
 	xorw    %ax, %ax
 	movw    %ax, %ds
@@ -64,7 +64,10 @@ start32:
 	# we are still running at a low EIP.
 	movl    $(RELOC(entry_pgdir)), %eax
 	movl    %eax, %cr3
-	# Turn on paging.
+	# Turn on paging, with page-size-extension enabled.
+	movl	%cr4, %eax
+	orl	$(CR4_PSE), %eax
+	movl	%eax, %cr4
 	movl    %cr0, %eax
 	orl     $(CR0_PE|CR0_PG|CR0_WP), %eax
 	movl    %eax, %cr0

@@ -176,15 +176,17 @@ extern volatile pde_t uvpd[];     // VA of current page directory
  * with page2pa() in kern/pmap.h.
  */
 struct PageInfo {
-	// Next page on the free list.
-	struct PageInfo *pp_link;
+	// Previous and next page on the free list.
+	struct PageInfo **pp_prev, *pp_next;
 
 	// pp_ref is the count of pointers (usually in page table entries)
 	// to this page, for pages allocated using page_alloc.
 	// Pages allocated at boot time using pmap.c's
 	// boot_alloc do not have valid reference count fields.
-
 	uint16_t pp_ref;
+
+	// Order of the chunk initiated by the page.
+	uint8_t pp_order;
 };
 
 #endif /* !__ASSEMBLER__ */

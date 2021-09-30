@@ -261,4 +261,10 @@ xchg(volatile uint32_t *addr, uint32_t newval)
 	return result;
 }
 
+static inline void
+wrmsr(uint32_t msr, uint64_t value)
+{
+	asm volatile("wrmsr" : : "c" (msr), "A" (value));
+}
+
 #endif /* !JOS_INC_X86_H */
