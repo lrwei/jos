@@ -145,5 +145,17 @@ sys_ipc_recv(void *dstva)
 unsigned int
 sys_time_msec(void)
 {
-	return (unsigned int) syscall(SYS_time_msec, 0, 0, 0, 0, 0, 0);
+	return (unsigned int) syscall2(SYS_time_msec, 0, 0, 0, 0, 0);
+}
+
+size_t
+sys_net_try_send(void *packet, size_t length)
+{
+	return syscall2(SYS_net_try_send, 0, (uint32_t) packet, length, 0, 0);
+}
+
+size_t
+sys_net_try_recv(uint8_t *buffer)
+{
+	return syscall2(SYS_net_try_recv, 0, (uint32_t) buffer, 0, 0, 0);
 }

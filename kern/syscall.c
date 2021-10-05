@@ -13,6 +13,7 @@
 #include <kern/sched.h>
 #include <kern/spinlock.h>
 #include <kern/time.h>
+#include <kern/e1000.h>
 
 // Print a string to the system console.
 // The string is exactly 'len' characters long.
@@ -457,7 +458,21 @@ static int
 sys_time_msec(void)
 {
 	// LAB 6: Your code here.
-	panic("sys_time_msec not implemented");
+	return time_msec();
+}
+
+static size_t
+sys_net_try_send(const void *packet, size_t length)
+{
+	user_mem_assert(curenv, packet, length, 0);
+	return net_packet_tx(packet, length);
+}
+
+static size_t
+sys_net_try_recv(uint8_t *buffer)
+{
+	user_mem_assert(curenv, buffer, RX_BUFFER_SIZE, PTE_W);
+	return net_packet_rx(buffer);
 }
 
 // Dispatches to the correct kernel function, passing the arguments.
@@ -511,6 +526,15 @@ syscall(uint32_t syscallno, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t a4, 
 		break;
 	case SYS_ipc_recv:
 		r = sys_ipc_recv((void *) a1);
+		break;
+	case SYS_time_msec:
+		r = sys_time_msec();
+		break;
+	case SYS_net_try_send:
+		r = sys_net_try_send((const void *) a1, a2);
+		break;
+	case SYS_net_try_recv:
+		r = sys_net_try_recv((uint8_t *) a1);
 		break;
 	default:
 		return -E_INVAL;

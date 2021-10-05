@@ -17,3 +17,5 @@
 /myapi.key
 /.suf
 /.tags
+/trace-event
+conf/env.mk

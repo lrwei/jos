@@ -161,6 +161,7 @@ QEMUOPTS += -smp $(CPUS) -accel tcg,thread=multi
 QEMUOPTS += -drive file=$(OBJDIR)/fs/fs.img,index=1,media=disk,format=raw
 IMAGES += $(OBJDIR)/fs/fs.img
 QEMUOPTS += -nic user,id=net0,hostfwd=tcp::$(PORT7)-:7,hostfwd=tcp::$(PORT80)-:80,hostfwd=udp::$(PORT7)-:7,model=e1000 -object filter-dump,id=filter0,netdev=net0,file=qemu.pcap
+QEMUEXTRA := -trace log,events=trace-event
 QEMUOPTS += $(QEMUEXTRA)
 
 .gdbinit: .gdbinit.tmpl
@@ -202,7 +203,8 @@ print-gdbport:
 
 # For deleting the build
 clean:
-	rm -rf $(OBJDIR) .gdbinit jos.in qemu.log jos.out __pycache__ qemu.pcap
+	rm -rf $(OBJDIR) .gdbinit jos.in qemu.log* jos.out* __pycache__ \
+	qemu.pcap*
 
 realclean: clean
 	rm -rf lab$(LAB).tar.gz \

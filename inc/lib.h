@@ -60,6 +60,8 @@ int	sys_page_unmap(envid_t env, void *pg);
 int	sys_ipc_try_send(envid_t to_env, uint32_t value, void *pg, int perm);
 int	sys_ipc_recv(void *rcv_pg);
 unsigned int sys_time_msec(void);
+size_t	sys_net_try_send(void *packet, size_t length);
+size_t	sys_net_try_recv(uint8_t *buffer);
 
 // This must be inlined.  Exercise for reader: why?
 // Parent can copy memory of the stack to its child only after sys_exofork()
